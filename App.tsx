@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Users, UserPlus, Mic, CheckCircle2, LayoutDashboard, Loader2, Briefcase, History,
@@ -5,7 +6,8 @@ import {
   FileQuestion, Save, Search, TrendingUp, PieChart as IconPieChart, BarChart3,
   ChevronRight, Filter, Download, MoreVertical, MapPin, Mail, Phone, Clock,
   Calendar, AlertCircle, MessageSquare, FileText, Upload, ChevronUp, ChevronDown,
-  Target, Percent, XCircle
+  Target, Percent, XCircle, Edit, Check, Globe, CreditCard, GripVertical, Pencil,
+  RefreshCw
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, 
@@ -25,7 +27,7 @@ const MANUAL_CRITERIA = [
   { id: 'attitude', label: 'Etika & Sopan Santun' },
   { id: 'communication', label: 'Gaya Komunikasi' },
   { id: 'enthusiasm', label: 'Antusiasme & Inisiatif' },
-  { id: 'knowledge', label: 'Pengetahuan Dasar' } // Label will be dynamic
+  { id: 'knowledge', label: 'Pengetahuan Dasar' }
 ];
 
 const DEFAULT_SCORES = {
@@ -55,13 +57,29 @@ const App: React.FC = () => {
   const [showTranscriptInModal, setShowTranscriptInModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  
+  // State for Editing Questions
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
 
-  // States for Adding Candidate
+  // Drag and Drop Refs
+  const dragItem = useRef<number | null>(null);
+  const dragOverItem = useRef<number | null>(null);
+
+  // States for Adding/Editing Candidate
+  const [isEditing, setIsEditing] = useState(false);
+  const [currentEditId, setCurrentEditId] = useState<string | null>(null);
+  
   const [newCandName, setNewCandName] = useState('');
   const [newCandDiv, setNewCandDiv] = useState<Division | ''>('');
   const [newCandPos, setNewCandPos] = useState<Position | ''>('');
   const [newCandEmail, setNewCandEmail] = useState('');
   const [newCandPhone, setNewCandPhone] = useState('');
+  
+  // States for Documents
+  const [hasKtp, setHasKtp] = useState(false);
+  const [hasKk, setHasKk] = useState(false);
+  const [hasSimA, setHasSimA] = useState(false);
+  const [hasSimC, setHasSimC] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -117,48 +135,98 @@ const App: React.FC = () => {
     setIsSavingQuestions(true);
     try {
       await setDoc(doc(db, 'question_templates', 'all'), { templates: questionBank });
-      alert("Bank soal berhasil disimpan!");
+      setEditingQuestionId(null);
+      alert("Bank soal berhasil disimpan ke Database!");
     } catch (e) { alert("Gagal menyimpan."); } finally { setIsSavingQuestions(false); }
   };
 
-  const deleteQuestion = (pos: Position, index: number) => {
+  const deleteQuestion = (pos: Position, questionId: string, category: 'General' | 'Technical') => {
     if (!confirm("Hapus pertanyaan ini?")) return;
-    const updated = { ...questionBank };
-    updated[pos] = updated[pos].filter((_, i) => i !== index);
-    setQuestionBank(updated);
+    
+    setQuestionBank(prev => {
+      const next = { ...prev };
+      
+      if (category === 'General') {
+        Object.keys(next).forEach(key => {
+          const p = key as Position;
+          next[p] = next[p].filter(q => q.id !== questionId);
+        });
+      } else {
+        next[pos] = next[pos].filter(q => q.id !== questionId);
+      }
+      return next;
+    });
   };
 
   const addQuestion = (pos: Position, category: 'General' | 'Technical') => {
-    const updated = { ...questionBank };
-    const posQuestions = [...(updated[pos] || [])];
+    const newId = `new-${Date.now()}`;
     const newQ: QuestionTemplate = { 
-      id: Date.now().toString(), 
+      id: newId, 
       category, 
-      question: `Pertanyaan ${category} baru...`, 
-      idealAnswer: 'Tulis jawaban ideal...' 
+      question: category === 'General' ? 'Pertanyaan Umum Baru (Otomatis ditambahkan ke semua posisi)...' : 'Pertanyaan Teknis Baru...', 
+      idealAnswer: 'Tulis jawaban ideal di sini...' 
     };
 
-    // Find insertion index: after the last existing question of the SAME category
-    const lastIndex = posQuestions.map(q => q.category).lastIndexOf(category);
-    if (lastIndex !== -1) {
-      posQuestions.splice(lastIndex + 1, 0, newQ);
-    } else {
-      // If none of this category exists
-      if (category === 'General') {
-        posQuestions.unshift(newQ); // General at the top
-      } else {
-        posQuestions.push(newQ); // Technical at the bottom
-      }
-    }
+    setQuestionBank(prev => {
+      const next = { ...prev };
 
-    updated[pos] = posQuestions;
-    setQuestionBank(updated);
+      if (category === 'General') {
+        Object.keys(next).forEach(key => {
+          const p = key as Position;
+          const lastGenIdx = next[p].map(q => q.category).lastIndexOf('General');
+          const newArr = [...next[p]];
+          if (lastGenIdx !== -1) {
+            newArr.splice(lastGenIdx + 1, 0, newQ);
+          } else {
+            newArr.unshift(newQ);
+          }
+          next[p] = newArr;
+        });
+      } else {
+        next[pos] = [...next[pos], newQ];
+      }
+      return next;
+    });
+    
+    setEditingQuestionId(newId);
   };
 
-  const updateQuestion = (pos: Position, index: number, field: keyof QuestionTemplate, value: string) => {
-    const updated = { ...questionBank };
-    updated[pos][index] = { ...updated[pos][index], [field]: value };
-    setQuestionBank(updated);
+  const updateQuestion = (id: string, field: keyof QuestionTemplate, value: string) => {
+    setQuestionBank(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(key => {
+        const pos = key as Position;
+        next[pos] = next[pos].map(q => {
+          if (q.id === id) {
+            return { ...q, [field]: value };
+          }
+          return q;
+        });
+      });
+      return next;
+    });
+  };
+
+  // Drag and Drop Logic
+  const handleSort = () => {
+    // Duplicate items
+    let _questionBank = { ...questionBank };
+    const items = [..._questionBank[selectedQuestionPos]];
+
+    // Remove and save the dragged item content
+    if (dragItem.current !== null && dragOverItem.current !== null) {
+      const draggedItemContent = items.splice(dragItem.current, 1)[0];
+      // Switch the position
+      items.splice(dragOverItem.current, 0, draggedItemContent);
+  
+      // Update state
+      _questionBank[selectedQuestionPos] = items;
+      setQuestionBank(_questionBank);
+  
+      // Reset position
+      dragItem.current = null;
+      dragOverItem.current = null;
+    }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -175,36 +243,112 @@ const App: React.FC = () => {
     localStorage.removeItem('daniswaraUser');
   };
 
-  const handleAddCandidate = async () => {
+  // Helper to check if SIM is required based on Division/Position
+  const isSimRequired = useMemo(() => {
+    return newCandDiv === Division.OPERASI || newCandPos === 'Umum';
+  }, [newCandDiv, newCandPos]);
+
+  // Handle Opening Add Modal (Reset)
+  const openAddModal = () => {
+    setIsEditing(false);
+    setCurrentEditId(null);
+    setNewCandName('');
+    setNewCandDiv('');
+    setNewCandPos('');
+    setNewCandEmail('');
+    setNewCandPhone('');
+    setHasKtp(false);
+    setHasKk(false);
+    setHasSimA(false);
+    setHasSimC(false);
+    setShowAddModal(true);
+  };
+
+  // Handle Opening Edit Modal (Populate)
+  const openEditModal = (c: Candidate) => {
+    setIsEditing(true);
+    setCurrentEditId(c.id);
+    setNewCandName(c.name);
+    setNewCandDiv(c.division);
+    setNewCandPos(c.position);
+    setNewCandEmail(c.email);
+    setNewCandPhone(c.phone);
+    
+    // Populate documents if they exist
+    setHasKtp(c.documents?.ktp || false);
+    setHasKk(c.documents?.kk || false);
+    setHasSimA(c.documents?.simA || false);
+    setHasSimC(c.documents?.simC || false);
+    
+    setShowAddModal(true);
+  };
+
+  const handleSaveCandidate = async () => {
     if (!newCandName || !newCandDiv || !newCandPos) return alert("Mohon lengkapi data");
     setIsParsing(true);
     try {
-      await addDoc(collection(db, "candidates"), {
+      const candidateData: any = {
         name: newCandName,
         division: newCandDiv,
         position: newCandPos,
         email: newCandEmail || `${newCandName.toLowerCase().replace(/\s/g, '')}@example.com`,
         phone: newCandPhone || '0812-xxxx-xxxx',
-        status: 'Interview',
-        skills: [],
-        experience: '-',
-        education: '-',
-        summary: '-'
-      });
+        documents: {
+          ktp: hasKtp,
+          kk: hasKk,
+          simA: isSimRequired ? hasSimA : false,
+          simC: isSimRequired ? hasSimC : false
+        }
+      };
+
+      if (isEditing && currentEditId) {
+        // Update existing
+        await updateDoc(doc(db, "candidates", currentEditId), candidateData);
+        alert("Data pelamar diperbarui!");
+      } else {
+        // Create new
+        await addDoc(collection(db, "candidates"), {
+          ...candidateData,
+          status: 'Interview',
+          skills: [],
+          experience: '-',
+          education: '-',
+          summary: '-'
+        });
+        alert("Pelamar berhasil ditambahkan!");
+      }
+
       setShowAddModal(false);
-      setNewCandName(''); setNewCandEmail(''); setNewCandPhone('');
       fetchCandidates();
-    } catch (e) { alert("Gagal menambah kandidat"); } finally { setIsParsing(false); }
+    } catch (e) { alert("Gagal menyimpan data"); } finally { setIsParsing(false); }
   };
 
+  const handleDeleteCandidate = async (id: string) => {
+    if (confirm("Hapus data pelamar ini secara permanen?")) {
+      try {
+        await deleteDoc(doc(db, "candidates", id));
+        fetchCandidates();
+      } catch(e) { alert("Gagal menghapus"); }
+    }
+  };
+
+  // Evaluate New Interview (Live)
   const handleEvaluate = async () => {
     if (!selectedCandidateId || !currentUser) return;
     setIsEvaluating(true);
     try {
       const cand = candidates.find(c => c.id === selectedCandidateId)!;
-      const result = await evaluateInterview(cand, interviewTranscript, cand.position, currentRaterScores);
+      // Pass the CURRENT question bank to the evaluation service
+      const currentQuestions = questionBank[cand.position] || [];
       
-      // Multi-rater support: Store HR as the primary evaluator
+      const result = await evaluateInterview(
+        cand, 
+        interviewTranscript, 
+        cand.position, 
+        currentRaterScores, 
+        currentQuestions
+      );
+      
       await updateDoc(doc(db, "candidates", cand.id), { 
         status: result.verdict, 
         evaluation: result, 
@@ -218,6 +362,47 @@ const App: React.FC = () => {
     } catch (e) { alert("Evaluasi gagal."); } finally { setIsEvaluating(false); }
   };
 
+  // Re-Evaluate Existing Interview (Recalculate with New Questions)
+  const handleReEvaluate = async () => {
+    if (!viewingCandidate || !viewingCandidate.transcript) return alert("Tidak ada transkrip untuk dinilai ulang.");
+    if (!confirm("Hitung ulang skor AI? Ini akan menggunakan DAFTAR PERTANYAAN TERBARU dari Bank Soal.")) return;
+
+    setIsEvaluating(true);
+    try {
+      // Pass the CURRENT question bank to the evaluation service
+      const currentQuestions = questionBank[viewingCandidate.position] || [];
+      
+      // We use existing manual scores attached to the candidate or default if missing
+      // Since we don't store raw manual scores separately in Candidate (only in criteriaScores), we'll assume defaults or try to extract.
+      // For simplicity in re-calc, we focus on AI score.
+      const result = await evaluateInterview(
+        viewingCandidate,
+        viewingCandidate.transcript,
+        viewingCandidate.position,
+        currentRaterScores, // Fallback to current UI sliders or defaults
+        currentQuestions
+      );
+
+      // Update Firebase
+      await updateDoc(doc(db, "candidates", viewingCandidate.id), {
+        status: result.verdict,
+        evaluation: result
+      });
+
+      // Update Local State
+      const updatedCand = { ...viewingCandidate, status: result.verdict, evaluation: result };
+      setViewingCandidate(updatedCand);
+      setCandidates(prev => prev.map(c => c.id === updatedCand.id ? updatedCand : c));
+
+      alert("Evaluasi ulang selesai dengan standar soal terbaru!");
+    } catch (e) {
+      console.error(e);
+      alert("Gagal melakukan evaluasi ulang.");
+    } finally {
+      setIsEvaluating(false);
+    }
+  };
+
   const stats = useMemo(() => {
     const total = candidates.length;
     const passed = candidates.filter(c => c.status === 'LULUS').length;
@@ -226,7 +411,6 @@ const App: React.FC = () => {
     const evaluated = candidates.filter(c => c.evaluation);
     const avgScore = evaluated.length ? Math.round(evaluated.reduce((a, b) => a + (b.evaluation?.score || 0), 0) / evaluated.length) : 0;
     
-    // Detailed Division Stats
     const divisionStats = Object.values(Division).map(d => {
       const divCandidates = candidates.filter(c => c.division === d);
       const divPassed = divCandidates.filter(c => c.status === 'LULUS').length;
@@ -242,11 +426,10 @@ const App: React.FC = () => {
       };
     });
 
-    // Score Distribution
     const scoreDist = [
-      { range: '> 85', count: evaluated.filter(c => (c.evaluation?.score || 0) > 85).length, fill: '#10b981' }, // Emerald
-      { range: '70 - 85', count: evaluated.filter(c => (c.evaluation?.score || 0) >= 70 && (c.evaluation?.score || 0) <= 85).length, fill: '#3b82f6' }, // Blue
-      { range: '< 70', count: evaluated.filter(c => (c.evaluation?.score || 0) < 70).length, fill: '#ef4444' } // Red
+      { range: '> 85', count: evaluated.filter(c => (c.evaluation?.score || 0) > 85).length, fill: '#10b981' }, 
+      { range: '70 - 85', count: evaluated.filter(c => (c.evaluation?.score || 0) >= 70 && (c.evaluation?.score || 0) <= 85).length, fill: '#3b82f6' }, 
+      { range: '< 70', count: evaluated.filter(c => (c.evaluation?.score || 0) < 70).length, fill: '#ef4444' } 
     ];
 
     return { total, passed, failed, process, avgScore, rate: total ? Math.round((passed/total)*100) : 0, divisionStats, scoreDist };
@@ -256,11 +439,6 @@ const App: React.FC = () => {
     c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
     c.position.toLowerCase().includes(searchTerm.toLowerCase())
   );
-
-  const getManualCriterionLabel = (id: string, div: string) => {
-    if (id === 'knowledge') return `Pengetahuan Dasar (${div})`;
-    return MANUAL_CRITERIA.find(m => m.id === id)?.label || id;
-  };
 
   if (!currentUser) {
     return (
@@ -286,7 +464,6 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden text-slate-900">
-      {/* Sidebar */}
       <aside className="hidden lg:flex lg:w-72 border-r bg-white flex-col z-20">
         <div className="p-8 flex items-center gap-4">
           <div className="bg-blue-600 p-2.5 rounded-xl rotate-3 shadow-lg shadow-blue-200">
@@ -335,7 +512,6 @@ const App: React.FC = () => {
         </div>
       </aside>
 
-      {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
         <header className="h-16 bg-white/80 backdrop-blur-md border-b flex items-center justify-between px-6 z-10 shrink-0">
            <div className="flex items-center gap-4 flex-1">
@@ -351,7 +527,7 @@ const App: React.FC = () => {
               </div>
            </div>
            <div className="flex items-center gap-3">
-              <button onClick={() => setShowAddModal(true)} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-all active:scale-95">
+              <button onClick={openAddModal} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-all active:scale-95">
                  <Plus className="w-3.5 h-3.5" /> Tambah Pelamar
               </button>
            </div>
@@ -371,7 +547,6 @@ const App: React.FC = () => {
                  </div>
               </div>
 
-              {/* KPI Cards - Dense */}
               <div className="grid grid-cols-5 gap-3 shrink-0">
                 {[
                   { label: 'Total Applicants', value: stats.total, sub: 'All Candidates', icon: Users, color: 'blue' },
@@ -394,7 +569,6 @@ const App: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-3 gap-4 flex-1 min-h-0">
-                 {/* Division Performance Table - More info in less space */}
                  <div className="col-span-2 bg-white rounded-[1.5rem] border border-slate-100 shadow-sm flex flex-col overflow-hidden">
                     <div className="p-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
                        <h3 className="font-black text-xs text-slate-800 flex items-center gap-2"><Briefcase className="w-3.5 h-3.5 text-slate-400"/> Performa Rekrutmen per Divisi</h3>
@@ -439,9 +613,7 @@ const App: React.FC = () => {
                     </div>
                  </div>
 
-                 {/* Charts & Distributions */}
                  <div className="flex flex-col gap-4">
-                    {/* Score Distribution */}
                     <div className="flex-1 bg-white p-4 rounded-[1.5rem] border border-slate-100 shadow-sm flex flex-col">
                        <h3 className="font-black text-xs text-slate-800 mb-2 flex items-center gap-2"><BarChart3 className="w-3.5 h-3.5 text-slate-400"/> Distribusi Kualitas (Skor)</h3>
                        <div className="flex-1 min-h-0">
@@ -461,7 +633,6 @@ const App: React.FC = () => {
                        </div>
                     </div>
                     
-                    {/* Recruitment Funnel Pie */}
                     <div className="flex-1 bg-white p-4 rounded-[1.5rem] border border-slate-100 shadow-sm flex flex-col relative">
                         <h3 className="font-black text-xs text-slate-800 mb-2 flex items-center gap-2"><IconPieChart className="w-3.5 h-3.5 text-slate-400"/> Funnel Seleksi</h3>
                         <div className="flex-1 min-h-0 relative">
@@ -489,7 +660,6 @@ const App: React.FC = () => {
                  </div>
               </div>
 
-              {/* Bottom Row - Top Candidates Strip */}
               <div className="bg-white p-4 rounded-[1.5rem] border border-slate-100 shadow-sm shrink-0">
                   <div className="flex items-center justify-between mb-3">
                      <h3 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Trophy className="w-3.5 h-3.5 text-amber-500"/> Top 5 Candidates Leaderboard</h3>
@@ -525,6 +695,17 @@ const App: React.FC = () => {
                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                  {filteredCandidates.filter(c => c.status === 'Interview' || c.status === 'Draft').map((c) => (
                    <div key={c.id} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-300 flex flex-col relative overflow-hidden group">
+                      
+                      {/* Action Buttons */}
+                      <div className="absolute top-6 right-6 flex gap-2 z-10">
+                         <button onClick={() => openEditModal(c)} className="p-2 bg-slate-50 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all">
+                            <Pencil className="w-4 h-4" />
+                         </button>
+                         <button onClick={() => handleDeleteCandidate(c.id)} className="p-2 bg-slate-50 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all">
+                            <Trash2 className="w-4 h-4" />
+                         </button>
+                      </div>
+
                       <div className="flex justify-between items-start mb-6">
                          <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center font-black text-blue-600 text-xl">
                             {c.name.charAt(0)}
@@ -534,7 +715,7 @@ const App: React.FC = () => {
                          </span>
                       </div>
                       <div className="mb-8">
-                         <h3 className="text-xl font-black text-slate-800 group-hover:text-blue-600 transition-colors mb-1">{c.name}</h3>
+                         <h3 className="text-xl font-black text-slate-800 group-hover:text-blue-600 transition-colors mb-1 pr-16 truncate">{c.name}</h3>
                          <p className="text-sm font-bold text-slate-400 flex items-center gap-1.5"><Briefcase className="w-3.5 h-3.5" /> {c.position}</p>
                          <p className="text-xs font-medium text-slate-400 mt-1 flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5" /> {c.division}</p>
                       </div>
@@ -622,7 +803,10 @@ const App: React.FC = () => {
                                        <button onClick={() => setViewingCandidate(c)} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-600 hover:text-white transition-all">
                                           <ChevronRight className="w-4 h-4" />
                                        </button>
-                                       <button onClick={async () => { if(confirm("Hapus permanen?")) { await deleteDoc(doc(db, "candidates", c.id)); fetchCandidates(); } }} className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all">
+                                       <button onClick={() => openEditModal(c)} className="p-2 bg-slate-50 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all">
+                                          <Edit className="w-4 h-4" />
+                                       </button>
+                                       <button onClick={() => handleDeleteCandidate(c.id)} className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all">
                                           <Trash2 className="w-4 h-4" />
                                        </button>
                                     </div>
@@ -698,6 +882,7 @@ const App: React.FC = () => {
 
                     <div className="w-full lg:w-96 bg-slate-50/30 p-8 flex flex-col space-y-8 overflow-y-auto shrink-0">
                        <h3 className="font-black text-slate-800 text-lg uppercase tracking-tight">Manual Rating (HR)</h3>
+                       <p className="text-[10px] text-slate-500 font-bold -mt-6 mb-4">Catatan internal (tidak mempengaruhi nilai kelulusan)</p>
                        <div className="space-y-6">
                           {MANUAL_CRITERIA.map((crit) => {
                              const currentCandDiv = candidates.find(c => c.id === selectedCandidateId)?.division || '';
@@ -728,10 +913,11 @@ const App: React.FC = () => {
 
           {activeTab === 'questions' && (
             <div className="h-full flex flex-col space-y-8 animate-in fade-in zoom-in-95 duration-500">
+               {/* Question Bank UI (Same as before) */}
                <div className="flex justify-between items-center bg-slate-50/80 backdrop-blur-sm sticky top-0 z-30 py-4 px-4 -mx-4 shrink-0">
                   <div>
                     <h2 className="text-2xl font-black text-slate-800 tracking-tight">Bank Soal AI</h2>
-                    <p className="text-xs text-slate-500 font-medium">Tentukan parameter pertanyaan untuk tiap posisi.</p>
+                    <p className="text-xs text-slate-500 font-medium">Atur pertanyaan interview. Soal "General" akan disinkronisasi ke semua posisi.</p>
                   </div>
                   <button onClick={handleSaveQuestions} disabled={isSavingQuestions} className="bg-blue-600 text-white px-8 py-3.5 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl flex items-center gap-3 hover:bg-blue-700 transition-all">
                     {isSavingQuestions ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Simpan Bank Soal
@@ -759,7 +945,7 @@ const App: React.FC = () => {
                         <h3 className="font-black text-xl text-slate-800 tracking-tight">{selectedQuestionPos}</h3>
                         <div className="flex gap-2">
                            <button onClick={() => addQuestion(selectedQuestionPos, 'General')} className="bg-slate-50 text-slate-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-slate-100 hover:bg-blue-50 hover:text-blue-600 transition-all flex items-center gap-2">
-                              <Plus className="w-3 h-3" /> + Soal Umum
+                              <Plus className="w-3 h-3" /> + Soal Umum (Semua Posisi)
                            </button>
                            <button onClick={() => addQuestion(selectedQuestionPos, 'Technical')} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-blue-100 hover:bg-blue-600 hover:text-white transition-all flex items-center gap-2">
                               <Plus className="w-3 h-3" /> + Soal Teknis
@@ -769,31 +955,72 @@ const App: React.FC = () => {
 
                      <div className="flex-1 overflow-y-auto p-8 space-y-6">
                         {questionBank[selectedQuestionPos]?.map((q, i) => (
-                          <div key={i} className="group relative p-6 bg-slate-50/50 rounded-3xl border-2 border-transparent hover:border-blue-100 hover:bg-white transition-all duration-300">
+                          <div 
+                             key={i} 
+                             draggable
+                             onDragStart={() => (dragItem.current = i)}
+                             onDragEnter={() => (dragOverItem.current = i)}
+                             onDragEnd={handleSort}
+                             onDragOver={(e) => e.preventDefault()}
+                             className={`group relative p-6 rounded-3xl border-2 transition-all duration-300 cursor-move ${editingQuestionId === q.id ? 'bg-blue-50/50 border-blue-200' : 'bg-slate-50/50 border-transparent hover:border-blue-100 hover:bg-white'}`}
+                           >
                              <div className="flex items-center gap-3 mb-4">
+                                <GripVertical className="w-5 h-5 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing" />
                                 <span className="bg-blue-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black shadow-sm">
                                    {i + 1}
                                 </span>
-                                <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest ${q.category === 'Technical' ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-200 text-slate-600'}`}>
-                                   {q.category}
+                                <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest flex items-center gap-1 ${q.category === 'Technical' ? 'bg-indigo-100 text-indigo-600' : 'bg-amber-100 text-amber-700'}`}>
+                                   {q.category} {q.category === 'General' && <Globe className="w-2 h-2"/>}
                                 </span>
-                                <button onClick={() => deleteQuestion(selectedQuestionPos, i)} className="absolute top-6 right-6 p-2 text-slate-300 hover:text-red-500 transition-all opacity-0 group-hover:opacity-100">
-                                   <Trash2 className="w-4 h-4" />
-                                </button>
+                                {q.category === 'General' && <span className="text-[8px] font-bold text-slate-400">Syncs to All Positions</span>}
+                                
+                                <div className="ml-auto flex items-center gap-2">
+                                  {editingQuestionId === q.id ? (
+                                     <button onClick={() => setEditingQuestionId(null)} className="p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-all shadow-md">
+                                        <Check className="w-4 h-4" />
+                                     </button>
+                                  ) : (
+                                     <button onClick={() => setEditingQuestionId(q.id)} className="p-2 bg-white text-slate-400 hover:text-blue-600 rounded-lg border border-slate-100 hover:border-blue-200 transition-all">
+                                        <Edit className="w-4 h-4" />
+                                     </button>
+                                  )}
+                                  
+                                  <button onClick={() => deleteQuestion(selectedQuestionPos, q.id, q.category)} className="p-2 bg-white text-slate-300 hover:text-red-500 rounded-lg border border-transparent hover:border-red-100 transition-all">
+                                     <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
                              </div>
-                             <div className="space-y-4">
-                                <textarea 
-                                  value={q.question} 
-                                  onChange={e => updateQuestion(selectedQuestionPos, i, 'question', e.target.value)}
-                                  className="w-full bg-transparent font-bold text-slate-700 outline-none resize-none"
-                                  rows={2}
-                                />
-                                <textarea 
-                                  value={q.idealAnswer} 
-                                  onChange={e => updateQuestion(selectedQuestionPos, i, 'idealAnswer', e.target.value)}
-                                  className="w-full bg-blue-50/30 p-3 rounded-xl text-xs font-medium text-blue-600 border border-blue-50 outline-none resize-none italic"
-                                  rows={2}
-                                />
+                             
+                             <div className="space-y-4 ml-8">
+                                {editingQuestionId === q.id ? (
+                                  <>
+                                    <div className="space-y-1">
+                                      <label className="text-[9px] font-bold text-slate-400 uppercase">Pertanyaan</label>
+                                      <textarea 
+                                        value={q.question} 
+                                        onChange={e => updateQuestion(q.id, 'question', e.target.value)}
+                                        className="w-full bg-white font-bold text-slate-800 outline-none p-4 rounded-xl border border-blue-200 focus:ring-2 focus:ring-blue-100 transition-all"
+                                        rows={3}
+                                      />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <label className="text-[9px] font-bold text-slate-400 uppercase">Jawaban Ideal (Panduan AI)</label>
+                                      <textarea 
+                                        value={q.idealAnswer} 
+                                        onChange={e => updateQuestion(q.id, 'idealAnswer', e.target.value)}
+                                        className="w-full bg-blue-50 p-4 rounded-xl text-xs font-medium text-blue-700 border border-blue-100 outline-none focus:ring-2 focus:ring-blue-100 transition-all italic"
+                                        rows={3}
+                                      />
+                                    </div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <p className="font-bold text-slate-700 text-sm leading-relaxed">{q.question}</p>
+                                    <div className="bg-blue-50/50 p-3 rounded-xl border border-blue-50">
+                                      <p className="text-xs font-medium text-blue-600/80 italic leading-relaxed">"{q.idealAnswer}"</p>
+                                    </div>
+                                  </>
+                                )}
                              </div>
                           </div>
                         ))}
@@ -844,27 +1071,60 @@ const App: React.FC = () => {
                 ) : (
                   <>
                     <div className="space-y-4">
-                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Activity className="w-4 h-4"/> Rapor Detil Penilaian (10 Sektor)</h4>
-                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
-                          {viewingCandidate.evaluation?.criteriaScores.map((cs, i) => (
-                             <div key={i} className={`p-4 rounded-2xl border transition-all hover:shadow-lg ${cs.type.includes('Manual') ? 'bg-white border-slate-100' : 'bg-blue-50/30 border-blue-50'}`}>
-                                <p className="text-[9px] font-black text-slate-400 uppercase tracking-tighter truncate">{cs.type}</p>
-                                <p className="text-xs font-bold text-slate-700 mt-1 mb-2 leading-tight h-8 overflow-hidden">{cs.name}</p>
-                                <div className="flex items-end justify-between">
-                                   <span className="text-xl font-black text-slate-800">{cs.score}</span>
-                                   <span className="text-[8px] font-black text-slate-400 uppercase">/100</span>
+                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><CreditCard className="w-4 h-4"/> Kelengkapan Dokumen</h4>
+                       <div className="flex gap-4 flex-wrap">
+                          <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${viewingCandidate.documents?.ktp ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-red-50 border-red-100 text-red-600'}`}>
+                             {viewingCandidate.documents?.ktp ? <CheckCircle2 className="w-4 h-4"/> : <XCircle className="w-4 h-4"/>}
+                             <span className="text-xs font-bold">KTP</span>
+                          </div>
+                          <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${viewingCandidate.documents?.kk ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-red-50 border-red-100 text-red-600'}`}>
+                             {viewingCandidate.documents?.kk ? <CheckCircle2 className="w-4 h-4"/> : <XCircle className="w-4 h-4"/>}
+                             <span className="text-xs font-bold">Kartu Keluarga</span>
+                          </div>
+                          {(viewingCandidate.division === Division.OPERASI || viewingCandidate.position === 'Umum') && (
+                            <>
+                                <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${viewingCandidate.documents?.simA ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
+                                   {viewingCandidate.documents?.simA ? <CheckCircle2 className="w-4 h-4"/> : <XCircle className="w-4 h-4"/>}
+                                   <span className="text-xs font-bold">SIM A</span>
                                 </div>
-                                <div className="mt-2 h-1 bg-slate-100 rounded-full overflow-hidden">
-                                   <div className={`h-full ${cs.score >= 70 ? 'bg-emerald-500' : 'bg-red-400'}`} style={{width: `${cs.score}%`}}></div>
+                                <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${viewingCandidate.documents?.simC ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
+                                   {viewingCandidate.documents?.simC ? <CheckCircle2 className="w-4 h-4"/> : <XCircle className="w-4 h-4"/>}
+                                   <span className="text-xs font-bold">SIM C</span>
                                 </div>
+                            </>
+                          )}
+                       </div>
+                    </div>
+
+                    <div className="space-y-4">
+                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Activity className="w-4 h-4"/> Hasil Penilaian (Bobot 50:50)</h4>
+                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="bg-blue-50/50 p-6 rounded-[2rem] border border-blue-50 flex items-center justify-between">
+                             <div>
+                                <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest">General Score</p>
+                                <p className="text-xs text-slate-500 font-medium mt-1">Soft Skill, Culture Fit</p>
                              </div>
-                          ))}
+                             <div className="text-right">
+                                <span className="text-3xl font-black text-slate-800">{viewingCandidate.evaluation?.generalScore || 0}</span>
+                                <span className="text-xs font-bold text-slate-400">/100</span>
+                             </div>
+                          </div>
+                          <div className="bg-indigo-50/50 p-6 rounded-[2rem] border border-indigo-50 flex items-center justify-between">
+                             <div>
+                                <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Technical Score</p>
+                                <p className="text-xs text-slate-500 font-medium mt-1">Hard Skill, Studi Kasus</p>
+                             </div>
+                             <div className="text-right">
+                                <span className="text-3xl font-black text-slate-800">{viewingCandidate.evaluation?.technicalScore || 0}</span>
+                                <span className="text-xs font-bold text-slate-400">/100</span>
+                             </div>
+                          </div>
                        </div>
                     </div>
 
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                        <div className="lg:col-span-2 space-y-4">
-                          <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-2">Analisis AI</h4>
+                          <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-2">Kesimpulan AI</h4>
                           <div className="p-6 bg-slate-50 rounded-[2rem] border border-slate-100 relative">
                              <div className="absolute top-4 left-4 text-4xl text-slate-200 opacity-50 font-serif leading-none">"</div>
                              <p className="text-sm text-slate-600 leading-relaxed italic font-medium px-4">{viewingCandidate.evaluation?.summary}</p>
@@ -900,7 +1160,20 @@ const App: React.FC = () => {
                                 <div className="p-2 bg-blue-50 rounded-xl text-blue-600"><Phone className="w-4 h-4" /></div>
                                 <div><p className="text-[9px] font-black text-slate-400 uppercase">Telepon</p><p className="text-xs font-bold">{viewingCandidate.phone}</p></div>
                              </div>
+                             
+                             {/* Re-Evaluate Button (Visible only if transcript exists) */}
+                             {viewingCandidate.transcript && (
+                               <button 
+                                 onClick={handleReEvaluate} 
+                                 disabled={isEvaluating}
+                                 className="w-full p-4 bg-amber-50 text-amber-600 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-amber-100 border border-amber-100 transition-all flex items-center justify-center gap-2"
+                               >
+                                  {isEvaluating ? <Loader2 className="w-4 h-4 animate-spin"/> : <RefreshCw className="w-4 h-4" />}
+                                  Evaluasi Ulang AI
+                               </button>
+                             )}
                           </div>
+                          
                           <button 
                             onClick={() => setShowTranscriptInModal(true)} 
                             className="w-full p-4 bg-slate-900 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-blue-600 transition-all shadow-xl"
@@ -923,30 +1196,34 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Add Modal with PDF Scanner */}
+      {/* Add/Edit Modal with PDF Scanner */}
       {showAddModal && (
         <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
-           <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-10 shadow-2xl relative animate-in zoom-in-95 duration-500">
+           <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-10 shadow-2xl relative animate-in zoom-in-95 duration-500 max-h-[90vh] overflow-y-auto">
               <button onClick={() => setShowAddModal(false)} className="absolute top-8 right-8 text-slate-300 hover:text-red-500 transition-all"><X className="w-6 h-6"/></button>
-              <h3 className="text-2xl font-black text-slate-800 mb-6 tracking-tight">Tambah Pelamar</h3>
+              <h3 className="text-2xl font-black text-slate-800 mb-6 tracking-tight">
+                {isEditing ? 'Edit Data Pelamar' : 'Tambah Pelamar'}
+              </h3>
               
-              <div className="mb-8 p-4 bg-blue-50 rounded-2xl border-2 border-dashed border-blue-200 flex flex-col items-center justify-center gap-3 relative overflow-hidden group">
-                 {isParsing ? (
-                   <>
-                     <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                     <p className="text-xs font-black text-blue-600 uppercase animate-pulse">AI Sedang Scan CV...</p>
-                   </>
-                 ) : (
-                   <>
-                     <Upload className="w-8 h-8 text-blue-600" />
-                     <div className="text-center">
-                        <p className="text-xs font-black text-blue-600 uppercase">Upload PDF CV / Foto CV</p>
-                        <p className="text-[9px] text-blue-400 font-bold">Data akan terisi otomatis oleh AI</p>
-                     </div>
-                     <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="application/pdf,image/*" className="absolute inset-0 opacity-0 cursor-pointer" />
-                   </>
-                 )}
-              </div>
+              {!isEditing && (
+                <div className="mb-8 p-4 bg-blue-50 rounded-2xl border-2 border-dashed border-blue-200 flex flex-col items-center justify-center gap-3 relative overflow-hidden group">
+                   {isParsing ? (
+                     <>
+                       <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                       <p className="text-xs font-black text-blue-600 uppercase animate-pulse">AI Sedang Scan CV...</p>
+                     </>
+                   ) : (
+                     <>
+                       <Upload className="w-8 h-8 text-blue-600" />
+                       <div className="text-center">
+                          <p className="text-xs font-black text-blue-600 uppercase">Upload PDF CV / Foto CV</p>
+                          <p className="text-[9px] text-blue-400 font-bold">Data akan terisi otomatis oleh AI</p>
+                       </div>
+                       <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="application/pdf,image/*" className="absolute inset-0 opacity-0 cursor-pointer" />
+                     </>
+                   )}
+                </div>
+              )}
 
               <div className="space-y-4">
                  <div className="grid grid-cols-2 gap-4">
@@ -979,8 +1256,39 @@ const App: React.FC = () => {
                        </select>
                     </div>
                  </div>
-                 <button onClick={handleAddCandidate} disabled={isParsing} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest shadow-xl hover:bg-blue-700 transition-all active:scale-95 flex items-center justify-center gap-2 mt-4">
-                    {isParsing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} Simpan Pelamar
+
+                 {/* Document Checklist */}
+                 <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-3">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-2">Kelengkapan Dokumen</p>
+                    <div className="flex gap-4">
+                       <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={hasKtp} onChange={e => setHasKtp(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                          <span className="text-xs font-bold text-slate-700">KTP</span>
+                       </label>
+                       <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={hasKk} onChange={e => setHasKk(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                          <span className="text-xs font-bold text-slate-700">KK</span>
+                       </label>
+                    </div>
+                    
+                    {/* Conditional SIM Requirements */}
+                    {isSimRequired && (
+                      <div className="flex gap-4 pt-2 border-t border-slate-200/50">
+                         <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" checked={hasSimA} onChange={e => setHasSimA(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                            <span className="text-xs font-bold text-slate-700">SIM A</span>
+                         </label>
+                         <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" checked={hasSimC} onChange={e => setHasSimC(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                            <span className="text-xs font-bold text-slate-700">SIM C</span>
+                         </label>
+                      </div>
+                    )}
+                 </div>
+
+                 <button onClick={handleSaveCandidate} disabled={isParsing} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest shadow-xl hover:bg-blue-700 transition-all active:scale-95 flex items-center justify-center gap-2 mt-4">
+                    {isParsing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} 
+                    {isEditing ? 'Simpan Perubahan' : 'Simpan Pelamar'}
                  </button>
               </div>
            </div>

@@ -20,7 +20,7 @@ export interface QuestionTemplate {
 export interface ScoreCriteria {
   name: string;
   score: number;
-  type: string; // Changed from fixed union to string to support "Manual (Irvan)", "Manual (Yoga)", etc.
+  type: string; 
   reason: string;
 }
 
@@ -35,21 +35,30 @@ export interface User {
 }
 
 export interface EvaluationResult {
-  score: number; // Final weighted score
-  manualScoreAvg: number; // 40% weight (Average of all raters)
-  aiScore: number; // 60% weight
+  score: number; // Final weighted score (50% General + 50% Technical)
+  generalScore: number; // New: Specific score for General Questions
+  technicalScore: number; // New: Specific score for Technical Questions
+  
   verdict: 'LULUS' | 'TIDAK LULUS';
   strengths: string[];
   weaknesses: string[];
   summary: string;
-  // Detailed scoring
+  
+  // Detailed scoring (includes Manual Criteria for display only)
   criteriaScores: ScoreCriteria[]; 
   
-  // Multi-rater storage: Key is the USERNAME (e.g., 'irvan', 'yoga')
+  // Multi-rater storage
   raterScores?: Record<string, Record<string, number>>;
 
   interviewDate: string;
   interviewDateISO?: string;
+}
+
+export interface Documents {
+  ktp: boolean;
+  kk: boolean;
+  simA?: boolean;
+  simC?: boolean;
 }
 
 export interface Candidate {
@@ -74,6 +83,7 @@ export interface Candidate {
   transcript?: string;
   division: Division;
   position: Position;
+  documents: Documents; // New Field for Document Checklist
 }
 
 // Web Speech API Types

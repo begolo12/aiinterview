@@ -1,7 +1,7 @@
 
 // Use correct import for GoogleGenAI
 import { GoogleGenAI, Type } from "@google/genai";
-import { Candidate, EvaluationResult, Position, ScoreCriteria } from "../types";
+import { Candidate, EvaluationResult, Position, QuestionTemplate, ScoreCriteria } from "../types";
 
 // Helper to lazy-load AI instance to prevent crash on app startup if API key is missing
 const getAI = () => {
@@ -27,10 +27,8 @@ const cleanJson = (text: string) => {
 
 export async function parseCV(fileData: string, mimeType: string): Promise<Partial<Candidate>> {
   try {
-    // Initialize AI here protected by try-catch
     const ai = getAI();
     
-    // Use gemini-3-flash-preview for basic text extraction tasks
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview", 
       contents: [
@@ -74,7 +72,6 @@ export async function parseCV(fileData: string, mimeType: string): Promise<Parti
       }
     });
 
-    // response.text is a property, not a method
     const cleanedText = cleanJson(response.text || "{}");
     return JSON.parse(cleanedText);
   } catch (e) {
@@ -87,69 +84,65 @@ export async function evaluateInterview(
   candidate: Candidate,
   interviewTranscript: string,
   position: Position,
-  manualScores: Record<string, number> 
+  manualScores: Record<string, number>,
+  questions: QuestionTemplate[] = [] // Added context questions
 ): Promise<EvaluationResult> {
   
-  // Calculate Manual Average
-  const manualValues = Object.values(manualScores);
-  const manualAvg = manualValues.length > 0 
-    ? Math.round(manualValues.reduce((a: number, b: number) => a + b, 0) / manualValues.length)
-    : 0;
-
-  // Prepare Manual Criteria Data for the final result
-  // Note: Knowledge label is now dynamic based on Division
+  // Note: Manual scores are kept for record but NOT used in calculation anymore
   const manualCriteriaList: ScoreCriteria[] = [
-    { name: 'Penampilan & Kerapian', score: manualScores['appearance'] || 0, type: 'Manual (HR)', reason: 'Penilaian langsung saat interview' },
-    { name: 'Etika & Sopan Santun', score: manualScores['attitude'] || 0, type: 'Manual (HR)', reason: 'Penilaian langsung saat interview' },
-    { name: 'Gaya Komunikasi', score: manualScores['communication'] || 0, type: 'Manual (HR)', reason: 'Penilaian langsung saat interview' },
-    { name: 'Antusiasme', score: manualScores['enthusiasm'] || 0, type: 'Manual (HR)', reason: 'Penilaian langsung saat interview' },
-    { name: `Pengetahuan Dasar (${candidate.division})`, score: manualScores['knowledge'] || 0, type: 'Manual (HR)', reason: 'Penilaian langsung saat interview' }
+    { name: 'Penampilan & Kerapian', score: manualScores['appearance'] || 0, type: 'Manual (HR)', reason: 'Observasi Visual' },
+    { name: 'Etika & Sopan Santun', score: manualScores['attitude'] || 0, type: 'Manual (HR)', reason: 'Observasi Visual' },
+    { name: 'Gaya Komunikasi', score: manualScores['communication'] || 0, type: 'Manual (HR)', reason: 'Observasi Visual' },
+    { name: 'Antusiasme', score: manualScores['enthusiasm'] || 0, type: 'Manual (HR)', reason: 'Observasi Visual' },
+    { name: `Pengetahuan Dasar (${candidate.division})`, score: manualScores['knowledge'] || 0, type: 'Manual (HR)', reason: 'Observasi Visual' }
   ];
 
+  // Prepare questions list string for prompt
+  const questionsList = questions.length > 0 
+    ? questions.map((q, i) => `${i+1}. ${q.question} (Kategori: ${q.category})`).join('\n')
+    : "Tidak ada daftar pertanyaan spesifik, nilai berdasarkan alur percakapan.";
+
   const prompt = `
-    Anda adalah Manager HR Senior yang sangat bijaksana dan cerdas. Tugas Anda adalah memberikan penilaian berbasis KONTEN PERCAKAPAN (60% Bobot) untuk posisi: ${position}.
+    Anda adalah Manager HR Senior. Tugas Anda adalah memberikan penilaian Objektif berdasarkan transkrip wawancara untuk posisi: ${position}.
     
     Kandidat: ${candidate.name}
     Divisi: ${candidate.division}
-    Pengalaman CV: ${candidate.experience}
-    Transkrip Wawancara: 
+    
+    Daftar Pertanyaan yang seharusnya diajukan (ACUAN PENILAIAN):
+    """
+    ${questionsList}
+    """
+
+    Transkrip Wawancara Aktual: 
     """
     ${interviewTranscript}
     """
     
     ---
-    INSTRUKSI PENTING:
-    1. Anda harus menilai kompetensi kandidat berdasarkan transkrip.
-    2. JIKA ADA pertanyaan teknis dari bank soal yang TIDAK DITANYAKAN oleh pewawancara:
-       - JANGAN memberikan nilai 0 atau mengatakan "tidak ada data".
-       - GUNAKAN KECERDASAN ANDA untuk menarik KESIMPULAN BIJAK (Inferensi) berdasarkan jawaban lain yang relevan, latar belakang pengalaman, dan gaya bicara kandidat.
-    3. Fokus pada POTENSI dan KECOCOKAN.
-
-    Sektor yang harus dinilai (Analisis AI):
-    - Pemahaman Tugas (Job Understanding)
-    - Keahlian Teknis (Technical Skill sesuai posisi ${position})
-    - Pemecahan Masalah (Problem Solving)
-    - Relevansi Pengalaman (Experience Fit)
-    - Kecocokan Budaya/Karakter (Culture Fit)
-
-    Berikan skor (0-100) dan alasan singkat (1 kalimat) untuk setiap sektor.
+    INSTRUKSI PENILAIAN (50% GENERAL / 50% TECHNICAL):
     
+    1. GENERAL SCORE (0-100):
+       - Cocokkan jawaban kandidat dengan pertanyaan kategori 'General' di atas.
+       - Nilai attitude, motivasi, dan kecocokan budaya kerja.
+
+    2. TECHNICAL SCORE (0-100):
+       - Cocokkan jawaban kandidat dengan pertanyaan kategori 'Technical' di atas.
+       - Nilai pemahaman teknis terhadap jobdesk ${position}.
+       - Jika transkrip tidak menjawab semua pertanyaan teknis, nilai berdasarkan apa yang ada saja namun berikan catatan di summary.
+
     Output JSON Format:
     {
-      "aiScore": number,
+      "generalScore": number,
+      "technicalScore": number,
       "summary": string,
       "strengths": string[],
-      "weaknesses": string[],
-      "aiCriteriaScores": [
-         { "name": "Nama Sektor", "score": number, "reason": "alasan singkat" }
-      ]
+      "weaknesses": string[]
     }
   `;
 
   try {
-    const ai = getAI(); // Initialize AI here
+    const ai = getAI();
     
-    // Use gemini-3-pro-preview for complex reasoning tasks
     const response = await ai.models.generateContent({
       model: "gemini-3-pro-preview", 
       contents: [{ parts: [{ text: prompt }] }],
@@ -158,53 +151,41 @@ export async function evaluateInterview(
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            aiScore: { type: Type.NUMBER },
+            generalScore: { type: Type.NUMBER },
+            technicalScore: { type: Type.NUMBER },
             summary: { type: Type.STRING },
             strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-            weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
-            aiCriteriaScores: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  score: { type: Type.NUMBER },
-                  reason: { type: Type.STRING }
-                }
-              }
-            }
+            weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } }
           }
         }
       }
     });
 
-    // response.text is a property
     const cleanedText = cleanJson(response.text || "{}");
     const data = JSON.parse(cleanedText);
     
-    // Combine Manual + AI Criteria to get 10 Sectors
-    const aiCriteriaFormatted: ScoreCriteria[] = (data.aiCriteriaScores || []).map((c: any) => ({
-      name: c.name,
-      score: c.score,
-      type: 'Analisis AI',
-      reason: c.reason
-    }));
-
-    const allCriteria = [...manualCriteriaList, ...aiCriteriaFormatted];
-
-    // Calculate Final Weighted Score: Manual (40%) + AI (60%)
-    const finalScore = Math.round((manualAvg * 0.4) + ((data.aiScore || 0) * 0.6));
+    // Calculate Final Score: 50% General + 50% Technical
+    const generalScore = data.generalScore || 0;
+    const technicalScore = data.technicalScore || 0;
+    const finalScore = Math.round((generalScore * 0.5) + (technicalScore * 0.5));
+    
     const finalVerdict = finalScore >= 70 ? 'LULUS' : 'TIDAK LULUS';
+
+    // AI Criteria for display
+    const aiCriteriaList: ScoreCriteria[] = [
+      { name: 'General / Soft Skill', score: generalScore, type: 'Analisis AI', reason: 'Berdasarkan pertanyaan umum & motivasi' },
+      { name: 'Technical / Hard Skill', score: technicalScore, type: 'Analisis AI', reason: 'Berdasarkan pertanyaan teknis & studi kasus' }
+    ];
 
     return {
       score: finalScore,
-      manualScoreAvg: manualAvg,
-      aiScore: data.aiScore || 0,
+      generalScore: generalScore,
+      technicalScore: technicalScore,
       verdict: finalVerdict,
       strengths: data.strengths || [],
       weaknesses: data.weaknesses || [],
       summary: data.summary || "",
-      criteriaScores: allCriteria,
+      criteriaScores: [...manualCriteriaList, ...aiCriteriaList],
       interviewDate: new Date().toLocaleDateString('id-ID', { 
         day: 'numeric', month: 'long', year: 'numeric' 
       }),
@@ -212,6 +193,6 @@ export async function evaluateInterview(
     };
   } catch (e) {
     console.error("Failed to parse evaluation response", e);
-    throw new Error("Gagal menganalisis hasil interview. Respon AI tidak valid atau API Key bermasalah.");
+    throw new Error("Gagal menganalisis hasil interview.");
   }
 }
