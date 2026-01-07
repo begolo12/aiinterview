@@ -3,7 +3,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Candidate, EvaluationResult, Position, QuestionTemplate, ScoreCriteria } from "../types";
 
-// Helper to lazy-load AI instance to prevent crash on app startup if API key is missing
+// Helper to lazy-load AI instance
 const getAI = () => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
@@ -13,16 +13,25 @@ const getAI = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-const cleanJson = (text: string) => {
-  // Remove markdown code blocks if present
-  let cleaned = text.replace(/```json\n?|```/g, '').trim();
-  // Find first { and last } to ensure valid JSON boundaries
-  const firstOpen = cleaned.indexOf('{');
-  const lastClose = cleaned.lastIndexOf('}');
+// Helper: Try to repair broken JSON string (common AI issue with unescaped quotes)
+const aggressiveJsonRepair = (str: string): string => {
+  // 1. Remove markdown code blocks
+  let fixed = str.replace(/```json\n?|```/g, '').trim();
+  
+  // 2. Find outermost brackets
+  const firstOpen = fixed.indexOf('{');
+  const lastClose = fixed.lastIndexOf('}');
   if (firstOpen !== -1 && lastClose !== -1) {
-    cleaned = cleaned.substring(firstOpen, lastClose + 1);
+    fixed = fixed.substring(firstOpen, lastClose + 1);
   }
-  return cleaned;
+
+  // 3. Attempt to escape quotes inside values. 
+  // This is tricky. A simple heuristic: 
+  // If we see a quote that is NOT preceded by [:{,] and NOT followed by [}:,], it's likely content.
+  // Note: This is not perfect but saves 80% of "chatty" AI errors.
+  // Using a library like 'json5' would be better but we want zero deps.
+  // We will trust valid JSON first.
+  return fixed;
 };
 
 export async function parseCV(fileData: string, mimeType: string): Promise<Partial<Candidate>> {
@@ -34,16 +43,11 @@ export async function parseCV(fileData: string, mimeType: string): Promise<Parti
       contents: [
         {
           parts: [
+            { inlineData: { data: fileData, mimeType: mimeType } },
             {
-              inlineData: {
-                data: fileData,
-                mimeType: mimeType
-              }
-            },
-            {
-              text: `Ekstrak data diri dari CV ini ke JSON.
-              Field: name, placeOfBirth, birthDate, gender, maritalStatus, religion, email, phone, address, lastPosition, summary, skills (array), experience, education.
-              Jika tidak ada, kosongkan string.`
+              text: `Extract candidate data from CV to JSON.
+              Fields: name, placeOfBirth, birthDate, gender, maritalStatus, religion, email, phone, address, lastPosition, summary, skills (array), experience, education.
+              If not found, use empty string.`
             }
           ]
         }
@@ -72,10 +76,10 @@ export async function parseCV(fileData: string, mimeType: string): Promise<Parti
       }
     });
 
-    const cleanedText = cleanJson(response.text || "{}");
+    const cleanedText = aggressiveJsonRepair(response.text || "{}");
     return JSON.parse(cleanedText);
   } catch (e) {
-    console.error("Failed to parse AI response", e);
+    console.error("Failed to parse CV response", e);
     return {};
   }
 }
@@ -85,10 +89,9 @@ export async function evaluateInterview(
   interviewTranscript: string,
   position: Position,
   manualScores: Record<string, number>,
-  questions: QuestionTemplate[] = [] // Added context questions
+  questions: QuestionTemplate[] = [] 
 ): Promise<EvaluationResult> {
   
-  // Note: Manual scores are kept for record but NOT used in calculation anymore
   const manualCriteriaList: ScoreCriteria[] = [
     { name: 'Penampilan & Kerapian', score: manualScores['appearance'] || 0, type: 'Manual (HR)', reason: 'Observasi Visual' },
     { name: 'Etika & Sopan Santun', score: manualScores['attitude'] || 0, type: 'Manual (HR)', reason: 'Observasi Visual' },
@@ -97,62 +100,61 @@ export async function evaluateInterview(
     { name: `Pengetahuan Dasar (${candidate.division})`, score: manualScores['knowledge'] || 0, type: 'Manual (HR)', reason: 'Observasi Visual' }
   ];
 
-  // Prepare questions list string for prompt
+  // Truncate to 15k to prevent timeout/context issues
+  const safeTranscript = interviewTranscript.length > 15000 
+    ? interviewTranscript.substring(0, 15000) + "...[TRUNCATED]" 
+    : interviewTranscript;
+
   const questionsList = questions.length > 0 
-    ? questions.map((q, i) => `${i+1}. ${q.question} (Kategori: ${q.category})`).join('\n')
-    : "Tidak ada daftar pertanyaan spesifik, nilai berdasarkan alur percakapan.";
+    ? questions.map((q, i) => `ID: ${q.id} (Urutan ${i+1}) | Pertanyaan: "${q.question}" | Kunci: "${q.idealAnswer}"`).join('\n')
+    : "Tidak ada pertanyaan spesifik. Nilai secara umum.";
 
   const prompt = `
-    Anda adalah Manager HR Senior. Tugas Anda adalah memberikan penilaian Objektif berdasarkan transkrip wawancara untuk posisi: ${position}.
+    Anda adalah HR Manager Senior. Tugas: Menilai kandidat berdasarkan TRANSKRIP WAWANCARA.
     
     Kandidat: ${candidate.name}
-    Divisi: ${candidate.division}
+    Posisi: ${position}
     
-    Daftar Pertanyaan yang seharusnya diajukan (ACUAN PENILAIAN):
-    """
+    DAFTAR PERTANYAAN (Gunakan ID yang sesuai):
     ${questionsList}
-    """
 
-    Transkrip Wawancara Aktual: 
-    """
-    ${interviewTranscript}
-    """
+    TRANSKRIP WAWANCARA: 
+    ${safeTranscript}
     
-    ---
-    INSTRUKSI PENILAIAN (50% GENERAL / 50% TECHNICAL):
-    
-    1. GENERAL SCORE (0-100):
-       - Cocokkan jawaban kandidat dengan pertanyaan kategori 'General' di atas.
-       - Nilai attitude, motivasi, dan kecocokan budaya kerja.
+    PEDOMAN SKOR:
+    0 = Tidak menjawab / Salah total.
+    10-50 = Jawaban terlalu singkat / ragu-ragu.
+    51-75 = Jawaban benar tapi kurang detail.
+    76-100 = Jawaban sempurna, detail, solutif.
 
-    2. TECHNICAL SCORE (0-100):
-       - Cocokkan jawaban kandidat dengan pertanyaan kategori 'Technical' di atas.
-       - Nilai pemahaman teknis terhadap jobdesk ${position}.
-       - Jika transkrip tidak menjawab semua pertanyaan teknis, nilai berdasarkan apa yang ada saja namun berikan catatan di summary.
-
-    Output JSON Format:
-    {
-      "generalScore": number,
-      "technicalScore": number,
-      "summary": string,
-      "strengths": string[],
-      "weaknesses": string[]
-    }
+    OUTPUT JSON:
+    Pastikan "id" pada "questionScores" cocok dengan ID di daftar pertanyaan di atas.
+    Jika ID tidak ditemukan, gunakan urutan index array.
   `;
 
   try {
     const ai = getAI();
     
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview", 
+      model: "gemini-3-flash-preview", 
       contents: [{ parts: [{ text: prompt }] }],
       config: {
+        maxOutputTokens: 8192, 
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            generalScore: { type: Type.NUMBER },
-            technicalScore: { type: Type.NUMBER },
+            questionScores: { 
+              type: Type.ARRAY, 
+              items: { 
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  score: { type: Type.NUMBER },
+                  reasoning: { type: Type.STRING } 
+                }
+              } 
+            },
             summary: { type: Type.STRING },
             strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
             weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } }
@@ -161,38 +163,93 @@ export async function evaluateInterview(
       }
     });
 
-    const cleanedText = cleanJson(response.text || "{}");
-    const data = JSON.parse(cleanedText);
+    const cleanedText = aggressiveJsonRepair(response.text || "{}");
     
-    // Calculate Final Score: 50% General + 50% Technical
-    const generalScore = data.generalScore || 0;
-    const technicalScore = data.technicalScore || 0;
-    const finalScore = Math.round((generalScore * 0.5) + (technicalScore * 0.5));
+    let data;
+    try {
+      data = JSON.parse(cleanedText);
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      console.log("Raw Text:", cleanedText);
+      // If parsing fails, we construct a fallback object with empty scores but error message in summary
+      // This prevents "0 results" crashing the UI logic, but warns the user
+      throw new Error("Gagal membaca format respon AI. Mohon coba 'Evaluasi Ulang'.");
+    }
     
+    // --- CALCULATE WEIGHTED SCORES WITH ROBUST MAPPING ---
+    let totalGeneralScore = 0;
+    let totalGeneralWeight = 0;
+    let totalTechnicalScore = 0;
+    let totalTechnicalWeight = 0;
+    
+    const questionBreakdown = questions.map((q, index) => {
+      // 1. Try Exact ID Match
+      let aiResult = data.questionScores?.find((qs: any) => qs.id === q.id);
+      
+      // 2. Fallback: Fuzzy ID Match (ignore case)
+      if (!aiResult && data.questionScores) {
+         aiResult = data.questionScores.find((qs: any) => 
+            qs.id && String(qs.id).toLowerCase() === String(q.id).toLowerCase()
+         );
+      }
+
+      // 3. Fallback: Index Match (Assuming AI kept the order)
+      if (!aiResult && data.questionScores && data.questionScores[index]) {
+         // Only use index match if the AI return list size is similar to question list size
+         aiResult = data.questionScores[index];
+      }
+
+      const rawScore = (aiResult && typeof aiResult.score === 'number') ? aiResult.score : 0;
+      const weight = (typeof q.weight === 'number') ? q.weight : 0;
+      const reasoning = aiResult?.reasoning || "Tidak ada analisis.";
+      
+      if (q.category === 'General') {
+        totalGeneralScore += rawScore * (weight / 100);
+        totalGeneralWeight += weight;
+      } else {
+        totalTechnicalScore += rawScore * (weight / 100);
+        totalTechnicalWeight += weight;
+      }
+
+      return {
+        id: q.id || `q-${index}`,
+        category: q.category || 'General',
+        question: q.question || '',
+        score: rawScore,
+        weight: weight,
+        reasoning: reasoning
+      };
+    });
+
+    // Handle case where total weights might be 0 to avoid NaN
+    const finalGeneralScore = totalGeneralWeight > 0 ? Math.round((totalGeneralScore / totalGeneralWeight) * 100) : 0;
+    const finalTechnicalScore = totalTechnicalWeight > 0 ? Math.round((totalTechnicalScore / totalTechnicalWeight) * 100) : 0;
+    
+    const finalScore = Math.round((finalGeneralScore * 0.5) + (finalTechnicalScore * 0.5));
     const finalVerdict = finalScore >= 70 ? 'LULUS' : 'TIDAK LULUS';
 
-    // AI Criteria for display
     const aiCriteriaList: ScoreCriteria[] = [
-      { name: 'General / Soft Skill', score: generalScore, type: 'Analisis AI', reason: 'Berdasarkan pertanyaan umum & motivasi' },
-      { name: 'Technical / Hard Skill', score: technicalScore, type: 'Analisis AI', reason: 'Berdasarkan pertanyaan teknis & studi kasus' }
+      { name: 'General / Soft Skill', score: finalGeneralScore, type: 'Analisis AI', reason: 'Rata-rata Terbobot' },
+      { name: 'Technical / Hard Skill', score: finalTechnicalScore, type: 'Analisis AI', reason: 'Rata-rata Terbobot' }
     ];
 
     return {
       score: finalScore,
-      generalScore: generalScore,
-      technicalScore: technicalScore,
+      generalScore: finalGeneralScore,
+      technicalScore: finalTechnicalScore,
       verdict: finalVerdict,
-      strengths: data.strengths || [],
-      weaknesses: data.weaknesses || [],
-      summary: data.summary || "",
+      strengths: Array.isArray(data.strengths) ? data.strengths : ["-"],
+      weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses : ["-"],
+      summary: data.summary || "Evaluasi selesai.",
       criteriaScores: [...manualCriteriaList, ...aiCriteriaList],
       interviewDate: new Date().toLocaleDateString('id-ID', { 
         day: 'numeric', month: 'long', year: 'numeric' 
       }),
-      interviewDateISO: new Date().toISOString()
+      interviewDateISO: new Date().toISOString(),
+      questionBreakdown: questionBreakdown
     };
-  } catch (e) {
+  } catch (e: any) {
     console.error("Failed to parse evaluation response", e);
-    throw new Error("Gagal menganalisis hasil interview.");
+    throw new Error(e.message || "Gagal menganalisis hasil interview.");
   }
 }

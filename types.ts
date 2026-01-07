@@ -15,6 +15,7 @@ export interface QuestionTemplate {
   category: 'General' | 'Technical';
   question: string;
   idealAnswer: string;
+  weight: number; // Added: Weightage percentage (0-100)
 }
 
 export interface ScoreCriteria {
@@ -52,6 +53,16 @@ export interface EvaluationResult {
 
   interviewDate: string;
   interviewDateISO?: string;
+  
+  // Store per-question breakdown
+  questionBreakdown?: { 
+    id: string; 
+    category: string;
+    question: string;
+    score: number; 
+    weight: number; 
+    reasoning?: string; // New: AI explanation/summary of the answer
+  }[];
 }
 
 export interface Documents {

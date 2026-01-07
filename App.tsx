@@ -7,7 +7,7 @@ import {
   ChevronRight, Filter, Download, MoreVertical, MapPin, Mail, Phone, Clock,
   Calendar, AlertCircle, MessageSquare, FileText, Upload, ChevronUp, ChevronDown,
   Target, Percent, XCircle, Edit, Check, Globe, CreditCard, GripVertical, Pencil,
-  RefreshCw
+  RefreshCw, AlertTriangle, Info, Scale
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, 
@@ -58,6 +58,10 @@ const App: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   
+  // Custom Modal States
+  const [alertState, setAlertState] = useState<{ show: boolean; message: string; type: 'success' | 'error' | 'info' }>({ show: false, message: '', type: 'info' });
+  const [confirmState, setConfirmState] = useState<{ show: boolean; message: string; onConfirm: () => void; }>({ show: false, message: '', onConfirm: () => {} });
+
   // State for Editing Questions
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
 
@@ -91,6 +95,14 @@ const App: React.FC = () => {
     if (savedUser) setCurrentUser(JSON.parse(savedUser));
   }, []);
 
+  const showAlert = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setAlertState({ show: true, message, type });
+  };
+
+  const showConfirm = (message: string, onConfirm: () => void) => {
+    setConfirmState({ show: true, message, onConfirm });
+  };
+
   const fetchCandidates = async () => {
     try {
       const q = query(collection(db, "candidates"), orderBy("name")); 
@@ -121,9 +133,9 @@ const App: React.FC = () => {
         if (extracted.name) setNewCandName(extracted.name);
         if (extracted.email) setNewCandEmail(extracted.email);
         if (extracted.phone) setNewCandPhone(extracted.phone);
-        alert("CV Berhasil di-scan!");
+        showAlert("CV Berhasil di-scan!", "success");
       } catch (err) {
-        alert("Gagal membaca CV. Silakan isi manual.");
+        showAlert("Gagal membaca CV. Silakan isi manual.", "error");
       } finally {
         setIsParsing(false);
       }
@@ -131,30 +143,75 @@ const App: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
+  const redistributeGeneralWeights = (questions: QuestionTemplate[]): QuestionTemplate[] => {
+    const generalQs = questions.filter(q => q.category === 'General');
+    if (generalQs.length === 0) return questions;
+
+    const weightPerQ = Math.floor(100 / generalQs.length);
+    const remainder = 100 % generalQs.length;
+
+    let genIndex = 0;
+    return questions.map(q => {
+      if (q.category === 'General') {
+        const newWeight = genIndex === generalQs.length - 1 ? weightPerQ + remainder : weightPerQ;
+        genIndex++;
+        return { ...q, weight: newWeight };
+      }
+      return q;
+    });
+  };
+
   const handleSaveQuestions = async () => {
+    // 1. Force Recalculate General Weights to 100% BEFORE validation
+    // This fixes the issue where existing data might be 0% or undefined.
+    let updatedQuestions = redistributeGeneralWeights([...questionBank[selectedQuestionPos]]);
+
+    // 2. Validate Weights
+    const techTotal = updatedQuestions.filter(q => q.category === 'Technical').reduce((sum, q) => sum + (q.weight || 0), 0);
+    const genTotal = updatedQuestions.filter(q => q.category === 'General').reduce((sum, q) => sum + (q.weight || 0), 0);
+
+    // Allow small rounding errors (99-101) for Technical
+    if (Math.abs(techTotal - 100) > 1 && updatedQuestions.some(q => q.category === 'Technical')) {
+       return showAlert(`Total Bobot Technical harus 100% (Saat ini: ${techTotal}%). Mohon sesuaikan manual.`, 'error');
+    }
+    
+    // General check should pass now, but keep as safeguard
+    if (updatedQuestions.some(q => q.category === 'General') && Math.abs(genTotal - 100) > 1) {
+       return showAlert(`Total Bobot General error sistem (Saat ini: ${genTotal}%).`, 'error');
+    }
+
     setIsSavingQuestions(true);
     try {
-      await setDoc(doc(db, 'question_templates', 'all'), { templates: questionBank });
+      // 3. Update the state and DB with the recalculated General weights
+      const newBank = { ...questionBank, [selectedQuestionPos]: updatedQuestions };
+      
+      // Update local state first to reflect changes immediately
+      setQuestionBank(newBank);
+      
+      await setDoc(doc(db, 'question_templates', 'all'), { templates: newBank });
       setEditingQuestionId(null);
-      alert("Bank soal berhasil disimpan ke Database!");
-    } catch (e) { alert("Gagal menyimpan."); } finally { setIsSavingQuestions(false); }
+      showAlert("Bank soal berhasil disimpan ke Database!", "success");
+    } catch (e) { showAlert("Gagal menyimpan bank soal.", "error"); } finally { setIsSavingQuestions(false); }
   };
 
   const deleteQuestion = (pos: Position, questionId: string, category: 'General' | 'Technical') => {
-    if (!confirm("Hapus pertanyaan ini?")) return;
-    
-    setQuestionBank(prev => {
-      const next = { ...prev };
-      
-      if (category === 'General') {
-        Object.keys(next).forEach(key => {
-          const p = key as Position;
-          next[p] = next[p].filter(q => q.id !== questionId);
+    showConfirm("Hapus pertanyaan ini secara permanen?", () => {
+        setQuestionBank(prev => {
+          const next = { ...prev };
+          
+          if (category === 'General') {
+            // Delete from ALL positions and redistribute
+            Object.keys(next).forEach(key => {
+              const p = key as Position;
+              const filtered = next[p].filter(q => q.id !== questionId);
+              next[p] = redistributeGeneralWeights(filtered);
+            });
+          } else {
+            // Delete from this position
+            next[pos] = next[pos].filter(q => q.id !== questionId);
+          }
+          return next;
         });
-      } else {
-        next[pos] = next[pos].filter(q => q.id !== questionId);
-      }
-      return next;
     });
   };
 
@@ -164,7 +221,8 @@ const App: React.FC = () => {
       id: newId, 
       category, 
       question: category === 'General' ? 'Pertanyaan Umum Baru (Otomatis ditambahkan ke semua posisi)...' : 'Pertanyaan Teknis Baru...', 
-      idealAnswer: 'Tulis jawaban ideal di sini...' 
+      idealAnswer: 'Tulis jawaban ideal di sini...',
+      weight: 0 // Will be fixed immediately
     };
 
     setQuestionBank(prev => {
@@ -175,15 +233,18 @@ const App: React.FC = () => {
           const p = key as Position;
           const lastGenIdx = next[p].map(q => q.category).lastIndexOf('General');
           const newArr = [...next[p]];
+          
           if (lastGenIdx !== -1) {
             newArr.splice(lastGenIdx + 1, 0, newQ);
           } else {
             newArr.unshift(newQ);
           }
-          next[p] = newArr;
+          // Auto balance general weights
+          next[p] = redistributeGeneralWeights(newArr);
         });
       } else {
         next[pos] = [...next[pos], newQ];
+        // For technical, new question gets 0 weight initially, user must adjust
       }
       return next;
     });
@@ -191,7 +252,7 @@ const App: React.FC = () => {
     setEditingQuestionId(newId);
   };
 
-  const updateQuestion = (id: string, field: keyof QuestionTemplate, value: string) => {
+  const updateQuestion = (id: string, field: keyof QuestionTemplate, value: string | number) => {
     setQuestionBank(prev => {
       const next = { ...prev };
       Object.keys(next).forEach(key => {
@@ -209,21 +270,14 @@ const App: React.FC = () => {
 
   // Drag and Drop Logic
   const handleSort = () => {
-    // Duplicate items
     let _questionBank = { ...questionBank };
     const items = [..._questionBank[selectedQuestionPos]];
 
-    // Remove and save the dragged item content
     if (dragItem.current !== null && dragOverItem.current !== null) {
       const draggedItemContent = items.splice(dragItem.current, 1)[0];
-      // Switch the position
       items.splice(dragOverItem.current, 0, draggedItemContent);
-  
-      // Update state
       _questionBank[selectedQuestionPos] = items;
       setQuestionBank(_questionBank);
-  
-      // Reset position
       dragItem.current = null;
       dragOverItem.current = null;
     }
@@ -231,11 +285,25 @@ const App: React.FC = () => {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = await loginUser(loginUsername, loginPassword);
-    if (user) {
-      setCurrentUser(user);
-      localStorage.setItem('daniswaraUser', JSON.stringify(user));
-    } else setAuthError('Username/Password salah.');
+    if (!loginUsername || !loginPassword) {
+      showAlert('Mohon isi username dan password.', 'info');
+      return;
+    }
+    
+    try {
+      const user = await loginUser(loginUsername, loginPassword);
+      if (user) {
+        setCurrentUser(user);
+        localStorage.setItem('daniswaraUser', JSON.stringify(user));
+        setAuthError('');
+      } else {
+        setAuthError('Username atau Password salah. (Default: irvan / 123)');
+        showAlert('Login Gagal: Username atau Password salah.', 'error');
+      }
+    } catch (err) {
+      console.error(err);
+      showAlert('Terjadi kesalahan sistem saat login. Cek koneksi internet.', 'error');
+    }
   };
 
   const handleLogout = () => {
@@ -284,7 +352,7 @@ const App: React.FC = () => {
   };
 
   const handleSaveCandidate = async () => {
-    if (!newCandName || !newCandDiv || !newCandPos) return alert("Mohon lengkapi data");
+    if (!newCandName || !newCandDiv || !newCandPos) return showAlert("Mohon lengkapi data Nama, Divisi, dan Posisi.", "error");
     setIsParsing(true);
     try {
       const candidateData: any = {
@@ -304,7 +372,7 @@ const App: React.FC = () => {
       if (isEditing && currentEditId) {
         // Update existing
         await updateDoc(doc(db, "candidates", currentEditId), candidateData);
-        alert("Data pelamar diperbarui!");
+        showAlert("Data pelamar berhasil diperbarui!", "success");
       } else {
         // Create new
         await addDoc(collection(db, "candidates"), {
@@ -315,21 +383,21 @@ const App: React.FC = () => {
           education: '-',
           summary: '-'
         });
-        alert("Pelamar berhasil ditambahkan!");
+        showAlert("Pelamar berhasil ditambahkan!", "success");
       }
 
       setShowAddModal(false);
       fetchCandidates();
-    } catch (e) { alert("Gagal menyimpan data"); } finally { setIsParsing(false); }
+    } catch (e) { showAlert("Gagal menyimpan data kandidat.", "error"); } finally { setIsParsing(false); }
   };
 
   const handleDeleteCandidate = async (id: string) => {
-    if (confirm("Hapus data pelamar ini secara permanen?")) {
+    showConfirm("Hapus data pelamar ini secara permanen?", async () => {
       try {
         await deleteDoc(doc(db, "candidates", id));
         fetchCandidates();
-      } catch(e) { alert("Gagal menghapus"); }
-    }
+      } catch(e) { showAlert("Gagal menghapus data.", "error"); }
+    });
   };
 
   // Evaluate New Interview (Live)
@@ -359,50 +427,61 @@ const App: React.FC = () => {
       setViewingCandidate({ ...cand, status: result.verdict, evaluation: result, transcript: interviewTranscript });
       setSelectedCandidateId(null);
       setInterviewTranscript('');
-    } catch (e) { alert("Evaluasi gagal."); } finally { setIsEvaluating(false); }
+      showAlert("Evaluasi AI selesai!", "success");
+    } catch (e) { showAlert("Evaluasi gagal. Silakan coba lagi.", "error"); } finally { setIsEvaluating(false); }
   };
 
   // Re-Evaluate Existing Interview (Recalculate with New Questions)
   const handleReEvaluate = async () => {
-    if (!viewingCandidate || !viewingCandidate.transcript) return alert("Tidak ada transkrip untuk dinilai ulang.");
-    if (!confirm("Hitung ulang skor AI? Ini akan menggunakan DAFTAR PERTANYAAN TERBARU dari Bank Soal.")) return;
+    if (!viewingCandidate || !viewingCandidate.transcript) return showAlert("Tidak ada transkrip untuk dinilai ulang.", "info");
+    
+    showConfirm("Hitung ulang skor AI? Ini akan menggunakan DAFTAR PERTANYAAN TERBARU dari Bank Soal.", async () => {
+        setIsEvaluating(true);
+        try {
+          // SAFEGUARD: Ensure questions exist for this position
+          const currentQuestions = questionBank[viewingCandidate.position];
+          
+          if (!currentQuestions || currentQuestions.length === 0) {
+            throw new Error(`Bank soal tidak ditemukan untuk posisi: ${viewingCandidate.position}. Mohon cek tab 'Bank Soal AI' dan pastikan posisi ini memiliki pertanyaan.`);
+          }
 
-    setIsEvaluating(true);
-    try {
-      // Pass the CURRENT question bank to the evaluation service
-      const currentQuestions = questionBank[viewingCandidate.position] || [];
-      
-      // We use existing manual scores attached to the candidate or default if missing
-      // Since we don't store raw manual scores separately in Candidate (only in criteriaScores), we'll assume defaults or try to extract.
-      // For simplicity in re-calc, we focus on AI score.
-      const result = await evaluateInterview(
-        viewingCandidate,
-        viewingCandidate.transcript,
-        viewingCandidate.position,
-        currentRaterScores, // Fallback to current UI sliders or defaults
-        currentQuestions
-      );
+          const result = await evaluateInterview(
+            viewingCandidate,
+            viewingCandidate.transcript || '',
+            viewingCandidate.position,
+            currentRaterScores, // Fallback to current UI sliders or defaults
+            currentQuestions
+          );
+    
+          // Update Firebase
+          await updateDoc(doc(db, "candidates", viewingCandidate.id), {
+            status: result.verdict, 
+            evaluation: result
+          });
+    
+          // Update Local State
+          const updatedCand = { ...viewingCandidate, status: result.verdict, evaluation: result };
+          setViewingCandidate(updatedCand);
+          setCandidates(prev => prev.map(c => c.id === updatedCand.id ? updatedCand : c));
+    
+          showAlert("Evaluasi ulang selesai dengan standar soal terbaru!", "success");
+        } catch (e: any) {
+          console.error(e);
+          showAlert(e.message || "Gagal melakukan evaluasi ulang.", "error");
+        } finally {
+          setIsEvaluating(false);
+        }
+    });
+  };
 
-      // Update Firebase
-      await updateDoc(doc(db, "candidates", viewingCandidate.id), {
-        status: result.verdict,
-        evaluation: result
-      });
-
-      // Update Local State
-      const updatedCand = { ...viewingCandidate, status: result.verdict, evaluation: result };
-      setViewingCandidate(updatedCand);
-      setCandidates(prev => prev.map(c => c.id === updatedCand.id ? updatedCand : c));
-
-      alert("Evaluasi ulang selesai dengan standar soal terbaru!");
-    } catch (e) {
-      console.error(e);
-      alert("Gagal melakukan evaluasi ulang.");
-    } finally {
-      setIsEvaluating(false);
+  const handleGenerateReport = () => {
+    const success = generateBODReport(candidates, '', '');
+    if (!success) {
+        showAlert("Tidak ada data kandidat untuk dilaporkan.", "info");
     }
   };
 
+  // ... (Stats calculation and filteredCandidates remain the same)
   const stats = useMemo(() => {
     const total = candidates.length;
     const passed = candidates.filter(c => c.status === 'LULUS').length;
@@ -435,6 +514,13 @@ const App: React.FC = () => {
     return { total, passed, failed, process, avgScore, rate: total ? Math.round((passed/total)*100) : 0, divisionStats, scoreDist };
   }, [candidates]);
 
+  // Calculate Weights for Display in Question Bank
+  const currentTotalWeightTechnical = useMemo(() => {
+     return (questionBank[selectedQuestionPos] || [])
+       .filter(q => q.category === 'Technical')
+       .reduce((sum, q) => sum + (q.weight || 0), 0);
+  }, [questionBank, selectedQuestionPos]);
+
   const filteredCandidates = candidates.filter(c => 
     c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
     c.position.toLowerCase().includes(searchTerm.toLowerCase())
@@ -442,31 +528,57 @@ const App: React.FC = () => {
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <form onSubmit={handleLogin} className="bg-white p-10 rounded-[2.5rem] shadow-2xl w-full max-w-md space-y-6">
           <div className="text-center mb-4">
-            <div className="bg-blue-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 rotate-3 shadow-xl">
+            <div className="bg-violet-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 rotate-3 shadow-xl shadow-violet-200">
                <Users className="w-8 h-8 text-white" />
             </div>
             <h1 className="text-3xl font-black text-slate-800 tracking-tight">DANISWARA</h1>
             <p className="text-slate-400 font-bold text-xs uppercase tracking-widest mt-1">Onboarding System</p>
           </div>
           <div className="space-y-3">
-            <input type="text" placeholder="Username" value={loginUsername} onChange={e => setLoginUsername(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-blue-500 transition-all" />
-            <input type="password" placeholder="Password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-blue-500 transition-all" />
+            <input type="text" placeholder="Username" value={loginUsername} onChange={e => setLoginUsername(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-violet-500 transition-all" />
+            <input type="password" placeholder="Password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-violet-500 transition-all" />
           </div>
           {authError && <p className="text-red-500 text-[10px] font-black uppercase text-center">{authError}</p>}
-          <button type="submit" className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest shadow-lg hover:bg-blue-700 active:scale-95 transition-all">Sign In</button>
+          <button type="submit" className="w-full bg-violet-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest shadow-lg hover:bg-violet-700 active:scale-95 transition-all">Sign In</button>
         </form>
+        {/* Render Modals even in login screen if needed, though mostly used inside */}
+        {alertState.show && (
+          <div className="fixed inset-0 z-[200] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+             <div className="bg-white p-8 rounded-[2rem] shadow-2xl max-w-sm w-full text-center space-y-4 animate-in zoom-in-95 duration-300">
+                <div className={`w-16 h-16 rounded-2xl mx-auto flex items-center justify-center ${
+                  alertState.type === 'success' ? 'bg-emerald-100 text-emerald-600' :
+                  alertState.type === 'error' ? 'bg-red-100 text-red-600' : 'bg-violet-100 text-violet-600'
+                }`}>
+                  {alertState.type === 'success' ? <CheckCircle2 className="w-8 h-8"/> :
+                   alertState.type === 'error' ? <XCircle className="w-8 h-8"/> : <Info className="w-8 h-8"/>}
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-800">
+                    {alertState.type === 'success' ? 'Berhasil!' : alertState.type === 'error' ? 'Oops!' : 'Info'}
+                  </h3>
+                  <p className="text-xs font-medium text-slate-500 mt-1 leading-relaxed px-4">{alertState.message}</p>
+                </div>
+                <button 
+                  onClick={() => setAlertState(prev => ({ ...prev, show: false }))}
+                  className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-black uppercase text-xs tracking-widest hover:bg-slate-800 transition-all"
+                >
+                  Tutup
+                </button>
+             </div>
+          </div>
+        )}
       </div>
     );
   }
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden text-slate-900">
-      <aside className="hidden lg:flex lg:w-72 border-r bg-white flex-col z-20">
+      <aside className="hidden lg:flex lg:w-72 border-r bg-white flex-col z-20 shadow-sm">
         <div className="p-8 flex items-center gap-4">
-          <div className="bg-blue-600 p-2.5 rounded-xl rotate-3 shadow-lg shadow-blue-200">
+          <div className="bg-violet-600 p-2.5 rounded-xl rotate-3 shadow-lg shadow-violet-200">
             <Users className="text-white w-6 h-6" />
           </div>
           <div>
@@ -477,7 +589,7 @@ const App: React.FC = () => {
         
         <div className="px-6 mb-6">
            <div className="bg-slate-50 p-4 rounded-2xl flex items-center gap-3 border border-slate-100">
-              <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center font-black text-blue-600">
+              <div className="w-10 h-10 rounded-full bg-violet-100 flex items-center justify-center font-black text-violet-600">
                  {currentUser.name.charAt(0)}
               </div>
               <div className="overflow-hidden">
@@ -498,7 +610,7 @@ const App: React.FC = () => {
             <button 
               key={item.id} 
               onClick={() => setActiveTab(item.id as any)} 
-              className={`w-full flex items-center gap-3 px-5 py-3.5 rounded-2xl text-sm font-bold transition-all ${activeTab === item.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}
+              className={`w-full flex items-center gap-3 px-5 py-3.5 rounded-2xl text-sm font-bold transition-all ${activeTab === item.id ? 'bg-violet-600 text-white shadow-lg shadow-violet-200' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}
             >
               <item.icon className={`w-5 h-5 ${activeTab === item.id ? 'text-white' : 'text-slate-400'}`} /> {item.label}
             </button>
@@ -520,7 +632,7 @@ const App: React.FC = () => {
                  <input 
                    type="text" 
                    placeholder="Cari kandidat..." 
-                   className="w-full pl-10 pr-4 py-2 bg-slate-50 rounded-xl text-xs font-medium border border-slate-100 focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all outline-none"
+                   className="w-full pl-10 pr-4 py-2 bg-slate-50 rounded-xl text-xs font-medium border border-slate-100 focus:bg-white focus:ring-2 focus:ring-violet-100 transition-all outline-none"
                    value={searchTerm}
                    onChange={e => setSearchTerm(e.target.value)}
                  />
@@ -536,22 +648,12 @@ const App: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-4 bg-slate-50/50">
           {activeTab === 'dashboard' && (
             <div className="h-full flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <div className="flex items-center justify-between shrink-0">
-                 <div>
-                    <h2 className="text-xl font-black text-slate-800 tracking-tight">Recruitment Overview</h2>
-                    <p className="text-[10px] text-slate-500 font-medium">Real-time performance metrics & analytics.</p>
-                 </div>
-                 <div className="bg-white px-3 py-1.5 rounded-lg border border-slate-200 flex items-center gap-2">
-                    <Calendar className="w-3 h-3 text-slate-400" />
-                    <span className="text-[10px] font-bold text-slate-600">{new Date().toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}</span>
-                 </div>
-              </div>
-
-              <div className="grid grid-cols-5 gap-3 shrink-0">
+               {/* ... stats ... */}
+               <div className="grid grid-cols-5 gap-3 shrink-0">
                 {[
-                  { label: 'Total Applicants', value: stats.total, sub: 'All Candidates', icon: Users, color: 'blue' },
+                  { label: 'Total Applicants', value: stats.total, sub: 'All Candidates', icon: Users, color: 'violet' },
                   { label: 'Qualified', value: stats.passed, sub: `${stats.rate}% Rate`, icon: Trophy, color: 'emerald' },
-                  { label: 'Rejected', value: stats.failed, sub: 'Below Standard', icon: XCircle, color: 'red' },
+                  { label: 'Rejected', value: stats.failed, sub: 'Below Standard', icon: XCircle, color: 'rose' },
                   { label: 'Active Process', value: stats.process, sub: 'In Pipeline', icon: Clock, color: 'amber' },
                   { label: 'Average Score', value: stats.avgScore, sub: '/ 100 Points', icon: Star, color: 'indigo' }
                 ].map((stat, i) => (
@@ -567,12 +669,13 @@ const App: React.FC = () => {
                   </div>
                 ))}
               </div>
-
+              
+              {/* Charts & Graphs */}
               <div className="grid grid-cols-3 gap-4 flex-1 min-h-0">
                  <div className="col-span-2 bg-white rounded-[1.5rem] border border-slate-100 shadow-sm flex flex-col overflow-hidden">
                     <div className="p-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
                        <h3 className="font-black text-xs text-slate-800 flex items-center gap-2"><Briefcase className="w-3.5 h-3.5 text-slate-400"/> Performa Rekrutmen per Divisi</h3>
-                       <button className="text-[10px] font-bold text-blue-600 hover:underline">View Details</button>
+                       <button className="text-[10px] font-bold text-violet-600 hover:underline">View Details</button>
                     </div>
                     <div className="flex-1 overflow-auto">
                        <table className="w-full text-left">
@@ -602,7 +705,7 @@ const App: React.FC = () => {
                                    </td>
                                    <td className="py-3 px-4 text-center text-xs font-bold text-slate-700">{d.avgScore}</td>
                                    <td className="py-3 px-4 text-center">
-                                      <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wide ${d.count > 0 ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-400'}`}>
+                                      <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wide ${d.count > 0 ? 'bg-violet-50 text-violet-600' : 'bg-slate-100 text-slate-400'}`}>
                                          {d.count > 0 ? 'Active' : 'No Data'}
                                       </span>
                                    </td>
@@ -641,12 +744,12 @@ const App: React.FC = () => {
                                     <Pie
                                         data={[
                                             { name: 'Lulus', value: stats.passed, color: '#10b981' },
-                                            { name: 'Gagal', value: stats.failed, color: '#ef4444' },
+                                            { name: 'Gagal', value: stats.failed, color: '#f43f5e' },
                                             { name: 'Proses', value: stats.process, color: '#f59e0b' }
                                         ]}
                                         cx="50%" cy="50%" innerRadius={35} outerRadius={55} paddingAngle={2} dataKey="value"
                                     >
-                                        {[{c:'#10b981'}, {c:'#ef4444'}, {c:'#f59e0b'}].map((e, i) => <Cell key={i} fill={e.c} />)}
+                                        {[{c:'#10b981'}, {c:'#f43f5e'}, {c:'#f59e0b'}].map((e, i) => <Cell key={i} fill={e.c} />)}
                                     </Pie>
                                     <RechartsTooltip contentStyle={{borderRadius: '8px', fontSize: '10px'}} />
                                 </PieChart>
@@ -659,32 +762,12 @@ const App: React.FC = () => {
                     </div>
                  </div>
               </div>
-
-              <div className="bg-white p-4 rounded-[1.5rem] border border-slate-100 shadow-sm shrink-0">
-                  <div className="flex items-center justify-between mb-3">
-                     <h3 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Trophy className="w-3.5 h-3.5 text-amber-500"/> Top 5 Candidates Leaderboard</h3>
-                     <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Ranked by Total Score</span>
-                  </div>
-                  <div className="grid grid-cols-5 gap-3">
-                    {candidates.filter(c => c.evaluation).sort((a,b) => (b.evaluation?.score || 0) - (a.evaluation?.score || 0)).slice(0, 5).map((c, i) => (
-                      <div key={i} onClick={() => setViewingCandidate(c)} className="cursor-pointer bg-slate-50 hover:bg-blue-50 p-2.5 rounded-xl border border-transparent hover:border-blue-100 transition-all flex items-center gap-3 group">
-                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs ${i===0 ? 'bg-amber-100 text-amber-700' : 'bg-slate-200 text-slate-600'}`}>#{i+1}</div>
-                         <div className="min-w-0">
-                            <p className="font-bold text-[10px] truncate text-slate-700">{c.name}</p>
-                            <p className="text-[9px] font-bold text-slate-400 truncate">{c.position}</p>
-                         </div>
-                         <div className="ml-auto text-right">
-                            <span className="text-xs font-black text-blue-600">{c.evaluation?.score}</span>
-                         </div>
-                      </div>
-                    ))}
-                  </div>
-              </div>
             </div>
           )}
 
           {activeTab === 'candidates' && (
-            <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-right-4 duration-500">
+             /* Candidates Tab (Unchanged) */
+             <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-right-4 duration-500">
                <div className="flex justify-between items-center">
                   <div>
                     <h2 className="text-3xl font-black text-slate-800">Antrean Pelamar</h2>
@@ -694,20 +777,19 @@ const App: React.FC = () => {
 
                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                  {filteredCandidates.filter(c => c.status === 'Interview' || c.status === 'Draft').map((c) => (
-                   <div key={c.id} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-300 flex flex-col relative overflow-hidden group">
+                   <div key={c.id} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-violet-200/50 transition-all duration-300 flex flex-col relative overflow-hidden group">
                       
-                      {/* Action Buttons */}
                       <div className="absolute top-6 right-6 flex gap-2 z-10">
-                         <button onClick={() => openEditModal(c)} className="p-2 bg-slate-50 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all">
+                         <button onClick={() => openEditModal(c)} className="p-2 bg-slate-50 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-all">
                             <Pencil className="w-4 h-4" />
                          </button>
-                         <button onClick={() => handleDeleteCandidate(c.id)} className="p-2 bg-slate-50 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all">
+                         <button onClick={() => handleDeleteCandidate(c.id)} className="p-2 bg-slate-50 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all">
                             <Trash2 className="w-4 h-4" />
                          </button>
                       </div>
 
                       <div className="flex justify-between items-start mb-6">
-                         <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center font-black text-blue-600 text-xl">
+                         <div className="w-14 h-14 rounded-2xl bg-violet-50 flex items-center justify-center font-black text-violet-600 text-xl">
                             {c.name.charAt(0)}
                          </div>
                          <span className="bg-amber-50 text-amber-600 text-[10px] font-black uppercase px-3 py-1.5 rounded-full tracking-widest border border-amber-100">
@@ -715,7 +797,7 @@ const App: React.FC = () => {
                          </span>
                       </div>
                       <div className="mb-8">
-                         <h3 className="text-xl font-black text-slate-800 group-hover:text-blue-600 transition-colors mb-1 pr-16 truncate">{c.name}</h3>
+                         <h3 className="text-xl font-black text-slate-800 group-hover:text-violet-600 transition-colors mb-1 pr-16 truncate">{c.name}</h3>
                          <p className="text-sm font-bold text-slate-400 flex items-center gap-1.5"><Briefcase className="w-3.5 h-3.5" /> {c.position}</p>
                          <p className="text-xs font-medium text-slate-400 mt-1 flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5" /> {c.division}</p>
                       </div>
@@ -723,7 +805,7 @@ const App: React.FC = () => {
                          {currentUser.role === 'HR' ? (
                            <button 
                              onClick={() => { setSelectedCandidateId(c.id); setInterviewTranscript(c.transcript || ''); setActiveTab('interview'); }}
-                             className="w-full bg-slate-900 text-white py-3.5 rounded-2xl font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 hover:bg-blue-600 transition-all active:scale-95"
+                             className="w-full bg-slate-900 text-white py-3.5 rounded-2xl font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 hover:bg-violet-600 transition-all active:scale-95"
                            >
                               <Mic className="w-4 h-4" /> Mulai Interview
                            </button>
@@ -743,13 +825,14 @@ const App: React.FC = () => {
           )}
 
           {activeTab === 'database' && (
+            /* Database Tab (Unchanged) */
             <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in slide-in-from-left-4 duration-500 pb-20">
                <div className="flex justify-between items-center">
                   <div>
                     <h2 className="text-3xl font-black text-slate-800">Database Kandidat</h2>
                     <p className="text-slate-500 font-medium">Histori lengkap semua kandidat dan skor 10 sektor.</p>
                   </div>
-                  <button onClick={() => generateBODReport(candidates, '', '')} className="bg-blue-600 text-white px-6 py-3 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-blue-700 transition-all">
+                  <button onClick={handleGenerateReport} className="bg-violet-600 text-white px-6 py-3 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-violet-700 transition-all">
                      <Download className="w-4 h-4" /> Download Report
                   </button>
                </div>
@@ -771,11 +854,11 @@ const App: React.FC = () => {
                               <tr key={c.id} className="group hover:bg-slate-50/50 transition-colors">
                                  <td className="py-5 px-8">
                                     <div className="flex items-center gap-4">
-                                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-black text-slate-400 group-hover:bg-blue-600 group-hover:text-white transition-all">
+                                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-black text-slate-400 group-hover:bg-violet-600 group-hover:text-white transition-all">
                                           {c.name.charAt(0)}
                                        </div>
                                        <div>
-                                          <p className="font-bold text-slate-800 group-hover:text-blue-600 transition-colors">{c.name}</p>
+                                          <p className="font-bold text-slate-800 group-hover:text-violet-600 transition-colors">{c.name}</p>
                                           <p className="text-[10px] text-slate-400 font-medium">{c.email}</p>
                                        </div>
                                     </div>
@@ -787,7 +870,7 @@ const App: React.FC = () => {
                                  <td className="py-5 px-6">
                                     <span className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
                                        c.status === 'LULUS' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
-                                       c.status === 'TIDAK LULUS' ? 'bg-red-50 text-red-600 border-red-100' :
+                                       c.status === 'TIDAK LULUS' ? 'bg-rose-50 text-rose-600 border-rose-100' :
                                        'bg-blue-50 text-blue-600 border-blue-100'
                                     }`}>
                                        {c.status}
@@ -800,13 +883,13 @@ const App: React.FC = () => {
                                  </td>
                                  <td className="py-5 px-8 text-right">
                                     <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                       <button onClick={() => setViewingCandidate(c)} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-600 hover:text-white transition-all">
+                                       <button onClick={() => setViewingCandidate(c)} className="p-2 bg-violet-50 text-violet-600 rounded-lg hover:bg-violet-600 hover:text-white transition-all">
                                           <ChevronRight className="w-4 h-4" />
                                        </button>
-                                       <button onClick={() => openEditModal(c)} className="p-2 bg-slate-50 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all">
+                                       <button onClick={() => openEditModal(c)} className="p-2 bg-slate-50 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-all">
                                           <Edit className="w-4 h-4" />
                                        </button>
-                                       <button onClick={() => handleDeleteCandidate(c.id)} className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all">
+                                       <button onClick={() => handleDeleteCandidate(c.id)} className="p-2 bg-rose-50 text-rose-500 rounded-lg hover:bg-rose-500 hover:text-white transition-all">
                                           <Trash2 className="w-4 h-4" />
                                        </button>
                                     </div>
@@ -821,12 +904,13 @@ const App: React.FC = () => {
           )}
 
           {activeTab === 'interview' && (
-            <div className="h-full max-w-7xl mx-auto flex flex-col space-y-6 animate-in fade-in zoom-in-95 duration-500 pb-10">
+             /* Interview Tab (Unchanged) */
+             <div className="h-full max-w-7xl mx-auto flex flex-col space-y-6 animate-in fade-in zoom-in-95 duration-500 pb-10">
                {!selectedCandidateId ? (
                  <div className="flex-1 bg-white rounded-[3rem] border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-300 p-10 text-center">
                     <Mic className="w-16 h-16 mb-4 opacity-10" />
                     <h3 className="text-xl font-black text-slate-400 mb-2">Belum Ada Interview Aktif</h3>
-                    <button onClick={() => setActiveTab('candidates')} className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl hover:bg-blue-600 transition-all">
+                    <button onClick={() => setActiveTab('candidates')} className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl hover:bg-violet-600 transition-all">
                        Ke Antrean Pelamar
                     </button>
                  </div>
@@ -835,7 +919,7 @@ const App: React.FC = () => {
                     <div className="flex-1 flex flex-col min-w-0 border-r relative">
                        <div className="p-8 border-b flex items-center justify-between bg-slate-50/50 shrink-0">
                           <div className="flex items-center gap-4">
-                             <div className="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-black text-lg">
+                             <div className="w-12 h-12 rounded-2xl bg-violet-600 text-white flex items-center justify-center font-black text-lg">
                                 {candidates.find(c => c.id === selectedCandidateId)?.name.charAt(0)}
                              </div>
                              <div>
@@ -843,7 +927,7 @@ const App: React.FC = () => {
                                 <p className="text-xs font-bold text-slate-400 uppercase tracking-tighter">{candidates.find(c => c.id === selectedCandidateId)?.position}</p>
                              </div>
                           </div>
-                          <button onClick={() => setSelectedCandidateId(null)} className="p-2 bg-white text-slate-400 hover:text-red-500 rounded-xl border border-slate-100 transition-all"><X className="w-5 h-5"/></button>
+                          <button onClick={() => setSelectedCandidateId(null)} className="p-2 bg-white text-slate-400 hover:text-rose-500 rounded-xl border border-slate-100 transition-all"><X className="w-5 h-5"/></button>
                        </div>
                        
                        <div className="flex-1 p-8 flex flex-col space-y-6 overflow-hidden">
@@ -857,12 +941,15 @@ const App: React.FC = () => {
                              />
                           </div>
                           
-                          <div className="h-40 bg-blue-50/50 rounded-[2rem] p-6 border border-blue-100/50 overflow-y-auto shrink-0">
-                             <h4 className="text-[10px] font-black text-blue-500 uppercase mb-4 tracking-widest flex items-center gap-2"><FileQuestion className="w-3 h-3"/> Pertanyaan Panduan</h4>
+                          <div className="h-40 bg-violet-50/50 rounded-[2rem] p-6 border border-violet-100/50 overflow-y-auto shrink-0">
+                             <h4 className="text-[10px] font-black text-violet-500 uppercase mb-4 tracking-widest flex items-center gap-2"><FileQuestion className="w-3 h-3"/> Pertanyaan Panduan</h4>
                              <div className="space-y-3">
                                 {(questionBank[candidates.find(c => c.id === selectedCandidateId)?.position as Position] || []).map((q, i) => (
-                                  <div key={i} className="bg-white p-3 rounded-xl border border-blue-100 shadow-sm text-xs font-bold text-slate-600 flex items-start gap-2">
-                                     <span className="text-blue-500">{i + 1}.</span> {q.question}
+                                  <div key={i} className="bg-white p-3 rounded-xl border border-violet-100 shadow-sm text-xs font-bold text-slate-600 flex items-center justify-between gap-2">
+                                     <div className="flex-1 flex items-start gap-2">
+                                       <span className="text-violet-500 min-w-[15px]">{i + 1}.</span> {q.question}
+                                     </div>
+                                     <span className="bg-violet-100 text-violet-600 text-[8px] font-black px-1.5 py-0.5 rounded ml-2 whitespace-nowrap">{q.weight}%</span>
                                   </div>
                                 ))}
                              </div>
@@ -873,7 +960,7 @@ const App: React.FC = () => {
                           <button 
                             onClick={handleEvaluate} 
                             disabled={isEvaluating || !interviewTranscript}
-                            className={`w-full py-4 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 transition-all ${!interviewTranscript ? 'bg-slate-200 text-slate-400' : 'bg-slate-900 text-white hover:bg-blue-600 shadow-xl shadow-blue-100'}`}
+                            className={`w-full py-4 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 transition-all ${!interviewTranscript ? 'bg-slate-200 text-slate-400' : 'bg-slate-900 text-white hover:bg-violet-600 shadow-xl shadow-violet-100'}`}
                           >
                              {isEvaluating ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />} Selesai & Evaluasi AI
                           </button>
@@ -892,14 +979,14 @@ const App: React.FC = () => {
                                 <div key={crit.id} className="space-y-3">
                                    <div className="flex justify-between items-center">
                                       <span className="text-xs font-black text-slate-500 uppercase tracking-tighter">{label}</span>
-                                      <span className="bg-white px-3 py-1 rounded-lg text-xs font-black text-blue-600 border border-slate-100">{currentRaterScores[crit.id]}</span>
+                                      <span className="bg-white px-3 py-1 rounded-lg text-xs font-black text-violet-600 border border-slate-100">{currentRaterScores[crit.id]}</span>
                                    </div>
                                    <input 
                                      type="range" 
                                      min="0" max="100" step="5" 
                                      value={currentRaterScores[crit.id]} 
                                      onChange={e => setCurrentRaterScores({...currentRaterScores, [crit.id]: parseInt(e.target.value)})}
-                                     className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                                     className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-violet-600"
                                    />
                                 </div>
                              );
@@ -913,13 +1000,13 @@ const App: React.FC = () => {
 
           {activeTab === 'questions' && (
             <div className="h-full flex flex-col space-y-8 animate-in fade-in zoom-in-95 duration-500">
-               {/* Question Bank UI (Same as before) */}
+               {/* Question Bank UI (Unchanged) */}
                <div className="flex justify-between items-center bg-slate-50/80 backdrop-blur-sm sticky top-0 z-30 py-4 px-4 -mx-4 shrink-0">
                   <div>
                     <h2 className="text-2xl font-black text-slate-800 tracking-tight">Bank Soal AI</h2>
-                    <p className="text-xs text-slate-500 font-medium">Atur pertanyaan interview. Soal "General" akan disinkronisasi ke semua posisi.</p>
+                    <p className="text-xs text-slate-500 font-medium">Atur pertanyaan dan Bobot. General (Otomatis Rata), Technical (Edit Manual).</p>
                   </div>
-                  <button onClick={handleSaveQuestions} disabled={isSavingQuestions} className="bg-blue-600 text-white px-8 py-3.5 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl flex items-center gap-3 hover:bg-blue-700 transition-all">
+                  <button onClick={handleSaveQuestions} disabled={isSavingQuestions} className="bg-violet-600 text-white px-8 py-3.5 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl flex items-center gap-3 hover:bg-violet-700 transition-all">
                     {isSavingQuestions ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Simpan Bank Soal
                   </button>
                </div>
@@ -932,11 +1019,26 @@ const App: React.FC = () => {
                            <button 
                              key={pos} 
                              onClick={() => setSelectedQuestionPos(pos as Position)}
-                             className={`w-full text-left px-4 py-3 rounded-xl text-xs font-black transition-all ${selectedQuestionPos === pos ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+                             className={`w-full text-left px-4 py-3 rounded-xl text-xs font-black transition-all ${selectedQuestionPos === pos ? 'bg-violet-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
                            >
                               {pos}
                            </button>
                         ))}
+                     </div>
+                     <div className="mt-6 ml-2 space-y-2">
+                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Bobot (Technical)</p>
+                       <div className="flex items-center gap-2">
+                         <div className="flex-1 h-3 bg-slate-200 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full transition-all duration-500 ${currentTotalWeightTechnical === 100 ? 'bg-emerald-500' : 'bg-rose-500'}`} 
+                              style={{ width: `${Math.min(currentTotalWeightTechnical, 100)}%` }}
+                            ></div>
+                         </div>
+                         <span className={`text-xs font-black ${currentTotalWeightTechnical === 100 ? 'text-emerald-600' : 'text-rose-500'}`}>{currentTotalWeightTechnical}%</span>
+                       </div>
+                       {currentTotalWeightTechnical !== 100 && (
+                         <p className="text-[9px] text-rose-500 font-bold">Harus 100%</p>
+                       )}
                      </div>
                   </div>
 
@@ -944,10 +1046,10 @@ const App: React.FC = () => {
                      <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-white z-20 shrink-0">
                         <h3 className="font-black text-xl text-slate-800 tracking-tight">{selectedQuestionPos}</h3>
                         <div className="flex gap-2">
-                           <button onClick={() => addQuestion(selectedQuestionPos, 'General')} className="bg-slate-50 text-slate-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-slate-100 hover:bg-blue-50 hover:text-blue-600 transition-all flex items-center gap-2">
-                              <Plus className="w-3 h-3" /> + Soal Umum (Semua Posisi)
+                           <button onClick={() => addQuestion(selectedQuestionPos, 'General')} className="bg-slate-50 text-slate-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-slate-100 hover:bg-violet-50 hover:text-violet-600 transition-all flex items-center gap-2">
+                              <Plus className="w-3 h-3" /> + Soal Umum (Auto %)
                            </button>
-                           <button onClick={() => addQuestion(selectedQuestionPos, 'Technical')} className="bg-blue-50 text-blue-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-blue-100 hover:bg-blue-600 hover:text-white transition-all flex items-center gap-2">
+                           <button onClick={() => addQuestion(selectedQuestionPos, 'Technical')} className="bg-violet-50 text-violet-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-violet-100 hover:bg-violet-600 hover:text-white transition-all flex items-center gap-2">
                               <Plus className="w-3 h-3" /> + Soal Teknis
                            </button>
                         </div>
@@ -961,31 +1063,47 @@ const App: React.FC = () => {
                              onDragStart={() => (dragItem.current = i)}
                              onDragEnter={() => (dragOverItem.current = i)}
                              onDragEnd={handleSort}
+                             onDragEndCapture={handleSort}
                              onDragOver={(e) => e.preventDefault()}
-                             className={`group relative p-6 rounded-3xl border-2 transition-all duration-300 cursor-move ${editingQuestionId === q.id ? 'bg-blue-50/50 border-blue-200' : 'bg-slate-50/50 border-transparent hover:border-blue-100 hover:bg-white'}`}
+                             className={`group relative p-6 rounded-3xl border-2 transition-all duration-300 cursor-move ${editingQuestionId === q.id ? 'bg-violet-50/50 border-violet-200' : 'bg-slate-50/50 border-transparent hover:border-violet-100 hover:bg-white'}`}
                            >
                              <div className="flex items-center gap-3 mb-4">
                                 <GripVertical className="w-5 h-5 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing" />
-                                <span className="bg-blue-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black shadow-sm">
+                                <span className="bg-violet-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black shadow-sm">
                                    {i + 1}
                                 </span>
                                 <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest flex items-center gap-1 ${q.category === 'Technical' ? 'bg-indigo-100 text-indigo-600' : 'bg-amber-100 text-amber-700'}`}>
                                    {q.category} {q.category === 'General' && <Globe className="w-2 h-2"/>}
                                 </span>
-                                {q.category === 'General' && <span className="text-[8px] font-bold text-slate-400">Syncs to All Positions</span>}
+                                {q.category === 'General' && <span className="text-[8px] font-bold text-slate-400">Syncs to All</span>}
                                 
                                 <div className="ml-auto flex items-center gap-2">
+                                  {/* Weight Display / Edit */}
+                                  <div className="flex items-center gap-1 bg-white border border-slate-200 px-2 py-1 rounded-lg mr-2">
+                                     <Scale className="w-3 h-3 text-slate-400" />
+                                     {editingQuestionId === q.id && q.category === 'Technical' ? (
+                                        <input 
+                                           type="number" 
+                                           className="w-10 text-xs font-black text-center outline-none bg-slate-50"
+                                           value={q.weight}
+                                           onChange={(e) => updateQuestion(q.id, 'weight', parseInt(e.target.value) || 0)}
+                                        />
+                                     ) : (
+                                        <span className="text-xs font-black text-slate-700">{q.weight}%</span>
+                                     )}
+                                  </div>
+
                                   {editingQuestionId === q.id ? (
                                      <button onClick={() => setEditingQuestionId(null)} className="p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-all shadow-md">
                                         <Check className="w-4 h-4" />
                                      </button>
                                   ) : (
-                                     <button onClick={() => setEditingQuestionId(q.id)} className="p-2 bg-white text-slate-400 hover:text-blue-600 rounded-lg border border-slate-100 hover:border-blue-200 transition-all">
+                                     <button onClick={() => setEditingQuestionId(q.id)} className="p-2 bg-white text-slate-400 hover:text-violet-600 rounded-lg border border-slate-100 hover:border-violet-200 transition-all">
                                         <Edit className="w-4 h-4" />
                                      </button>
                                   )}
                                   
-                                  <button onClick={() => deleteQuestion(selectedQuestionPos, q.id, q.category)} className="p-2 bg-white text-slate-300 hover:text-red-500 rounded-lg border border-transparent hover:border-red-100 transition-all">
+                                  <button onClick={() => deleteQuestion(selectedQuestionPos, q.id, q.category)} className="p-2 bg-white text-slate-300 hover:text-rose-500 rounded-lg border border-transparent hover:border-rose-100 transition-all">
                                      <Trash2 className="w-4 h-4" />
                                   </button>
                                 </div>
@@ -999,7 +1117,7 @@ const App: React.FC = () => {
                                       <textarea 
                                         value={q.question} 
                                         onChange={e => updateQuestion(q.id, 'question', e.target.value)}
-                                        className="w-full bg-white font-bold text-slate-800 outline-none p-4 rounded-xl border border-blue-200 focus:ring-2 focus:ring-blue-100 transition-all"
+                                        className="w-full bg-white font-bold text-slate-800 outline-none p-4 rounded-xl border border-violet-200 focus:ring-2 focus:ring-violet-100 transition-all"
                                         rows={3}
                                       />
                                     </div>
@@ -1008,16 +1126,21 @@ const App: React.FC = () => {
                                       <textarea 
                                         value={q.idealAnswer} 
                                         onChange={e => updateQuestion(q.id, 'idealAnswer', e.target.value)}
-                                        className="w-full bg-blue-50 p-4 rounded-xl text-xs font-medium text-blue-700 border border-blue-100 outline-none focus:ring-2 focus:ring-blue-100 transition-all italic"
+                                        className="w-full bg-violet-50 p-4 rounded-xl text-xs font-medium text-violet-700 border border-violet-100 outline-none focus:ring-2 focus:ring-violet-100 transition-all italic"
                                         rows={3}
                                       />
                                     </div>
+                                    {q.category === 'General' && (
+                                       <p className="text-[10px] text-amber-600 font-bold italic bg-amber-50 p-2 rounded-lg">
+                                          *Bobot soal General diatur otomatis (Rata-rata).
+                                       </p>
+                                    )}
                                   </>
                                 ) : (
                                   <>
                                     <p className="font-bold text-slate-700 text-sm leading-relaxed">{q.question}</p>
-                                    <div className="bg-blue-50/50 p-3 rounded-xl border border-blue-50">
-                                      <p className="text-xs font-medium text-blue-600/80 italic leading-relaxed">"{q.idealAnswer}"</p>
+                                    <div className="bg-violet-50/50 p-3 rounded-xl border border-violet-50">
+                                      <p className="text-xs font-medium text-violet-600/80 italic leading-relaxed">"{q.idealAnswer}"</p>
                                     </div>
                                   </>
                                 )}
@@ -1032,13 +1155,14 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Rapor & Transcript Detail Modal */}
+      {/* Rapor & Transcript Detail Modal (Same as before) */}
       {viewingCandidate && (
-        <div className="fixed inset-0 z-[100] bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-5xl max-h-[95vh] rounded-[3rem] shadow-2xl overflow-hidden flex flex-col relative animate-in zoom-in-95 duration-500">
-             <div className={`p-8 flex items-center justify-between border-b ${viewingCandidate.status === 'LULUS' ? 'bg-emerald-50/50' : 'bg-red-50/50'} shrink-0`}>
+        <div className="fixed inset-0 z-[50] bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-300">
+           {/* ... existing modal code ... */}
+           <div className="bg-white w-full max-w-5xl max-h-[95vh] rounded-[3rem] shadow-2xl overflow-hidden flex flex-col relative animate-in zoom-in-95 duration-500">
+             <div className={`p-8 flex items-center justify-between border-b ${viewingCandidate.status === 'LULUS' ? 'bg-emerald-50/50' : 'bg-rose-50/50'} shrink-0`}>
                 <div className="flex items-center gap-6">
-                   <div className={`w-16 h-16 rounded-[1.5rem] flex items-center justify-center font-black text-2xl shadow-xl ${viewingCandidate.status === 'LULUS' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}>
+                   <div className={`w-16 h-16 rounded-[1.5rem] flex items-center justify-center font-black text-2xl shadow-xl ${viewingCandidate.status === 'LULUS' ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'}`}>
                       {viewingCandidate.name.charAt(0)}
                    </div>
                    <div>
@@ -1051,9 +1175,9 @@ const App: React.FC = () => {
                 <div className="flex items-center gap-4">
                    <div className="text-right mr-4">
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Skor Akhir</p>
-                      <h3 className={`text-4xl font-black ${viewingCandidate.status === 'LULUS' ? 'text-emerald-600' : 'text-red-600'}`}>{viewingCandidate.evaluation?.score || 0}/100</h3>
+                      <h3 className={`text-4xl font-black ${viewingCandidate.status === 'LULUS' ? 'text-emerald-600' : 'text-rose-600'}`}>{viewingCandidate.evaluation?.score || 0}/100</h3>
                    </div>
-                   <button onClick={() => { setViewingCandidate(null); setShowTranscriptInModal(false); }} className="p-3 bg-white text-slate-400 hover:text-red-500 rounded-2xl border transition-all active:scale-90"><X className="w-6 h-6"/></button>
+                   <button onClick={() => { setViewingCandidate(null); setShowTranscriptInModal(false); }} className="p-3 bg-white text-slate-400 hover:text-rose-500 rounded-2xl border transition-all active:scale-90"><X className="w-6 h-6"/></button>
                 </div>
              </div>
              
@@ -1061,8 +1185,8 @@ const App: React.FC = () => {
                 {showTranscriptInModal ? (
                   <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
                      <div className="flex items-center justify-between border-b pb-4">
-                        <h4 className="text-xl font-black text-slate-800 flex items-center gap-2"><MessageSquare className="w-6 h-6 text-blue-600" /> Transkrip Wawancara</h4>
-                        <button onClick={() => setShowTranscriptInModal(false)} className="text-blue-600 font-bold text-sm hover:underline">Kembali ke Rapor</button>
+                        <h4 className="text-xl font-black text-slate-800 flex items-center gap-2"><MessageSquare className="w-6 h-6 text-violet-600" /> Transkrip Wawancara</h4>
+                        <button onClick={() => setShowTranscriptInModal(false)} className="text-violet-600 font-bold text-sm hover:underline">Kembali ke Rapor</button>
                      </div>
                      <div className="bg-slate-50 p-8 rounded-[2rem] border border-slate-100 font-mono text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">
                         {viewingCandidate.transcript || "Tidak ada transkrip tersedia."}
@@ -1073,11 +1197,11 @@ const App: React.FC = () => {
                     <div className="space-y-4">
                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><CreditCard className="w-4 h-4"/> Kelengkapan Dokumen</h4>
                        <div className="flex gap-4 flex-wrap">
-                          <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${viewingCandidate.documents?.ktp ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-red-50 border-red-100 text-red-600'}`}>
+                          <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${viewingCandidate.documents?.ktp ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
                              {viewingCandidate.documents?.ktp ? <CheckCircle2 className="w-4 h-4"/> : <XCircle className="w-4 h-4"/>}
                              <span className="text-xs font-bold">KTP</span>
                           </div>
-                          <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${viewingCandidate.documents?.kk ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-red-50 border-red-100 text-red-600'}`}>
+                          <div className={`px-4 py-2 rounded-xl border flex items-center gap-2 ${viewingCandidate.documents?.kk ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
                              {viewingCandidate.documents?.kk ? <CheckCircle2 className="w-4 h-4"/> : <XCircle className="w-4 h-4"/>}
                              <span className="text-xs font-bold">Kartu Keluarga</span>
                           </div>
@@ -1099,9 +1223,9 @@ const App: React.FC = () => {
                     <div className="space-y-4">
                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Activity className="w-4 h-4"/> Hasil Penilaian (Bobot 50:50)</h4>
                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="bg-blue-50/50 p-6 rounded-[2rem] border border-blue-50 flex items-center justify-between">
+                          <div className="bg-violet-50/50 p-6 rounded-[2rem] border border-violet-50 flex items-center justify-between">
                              <div>
-                                <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest">General Score</p>
+                                <p className="text-[10px] font-black text-violet-400 uppercase tracking-widest">General Score</p>
                                 <p className="text-xs text-slate-500 font-medium mt-1">Soft Skill, Culture Fit</p>
                              </div>
                              <div className="text-right">
@@ -1139,10 +1263,10 @@ const App: React.FC = () => {
                                 </ul>
                              </div>
                              <div className="space-y-3">
-                                <p className="text-[10px] font-black text-red-600 uppercase tracking-widest flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Kelemahan</p>
+                                <p className="text-[10px] font-black text-rose-600 uppercase tracking-widest flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Kelemahan</p>
                                 <ul className="space-y-2">
                                    {viewingCandidate.evaluation?.weaknesses.map((w, i) => (
-                                      <li key={i} className="text-xs font-bold text-slate-700 bg-red-50 px-3 py-2 rounded-xl flex items-start gap-2 border border-red-100/50">• {w}</li>
+                                      <li key={i} className="text-xs font-bold text-slate-700 bg-rose-50 px-3 py-2 rounded-xl flex items-start gap-2 border border-rose-100/50">• {w}</li>
                                    ))}
                                 </ul>
                              </div>
@@ -1153,11 +1277,11 @@ const App: React.FC = () => {
                           <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-2">Opsi Lanjutan</h4>
                           <div className="bg-white p-6 rounded-[2rem] border border-slate-100 space-y-4 shadow-sm">
                              <div className="flex items-center gap-4">
-                                <div className="p-2 bg-blue-50 rounded-xl text-blue-600"><Mail className="w-4 h-4" /></div>
+                                <div className="p-2 bg-violet-50 rounded-xl text-violet-600"><Mail className="w-4 h-4" /></div>
                                 <div><p className="text-[9px] font-black text-slate-400 uppercase">Email</p><p className="text-xs font-bold">{viewingCandidate.email}</p></div>
                              </div>
                              <div className="flex items-center gap-4">
-                                <div className="p-2 bg-blue-50 rounded-xl text-blue-600"><Phone className="w-4 h-4" /></div>
+                                <div className="p-2 bg-violet-50 rounded-xl text-violet-600"><Phone className="w-4 h-4" /></div>
                                 <div><p className="text-[9px] font-black text-slate-400 uppercase">Telepon</p><p className="text-xs font-bold">{viewingCandidate.phone}</p></div>
                              </div>
                              
@@ -1176,7 +1300,7 @@ const App: React.FC = () => {
                           
                           <button 
                             onClick={() => setShowTranscriptInModal(true)} 
-                            className="w-full p-4 bg-slate-900 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-blue-600 transition-all shadow-xl"
+                            className="w-full p-4 bg-slate-900 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-violet-600 transition-all shadow-xl"
                           >
                              Lihat Transkrip Lengkap
                           </button>
@@ -1188,36 +1312,40 @@ const App: React.FC = () => {
              
              <div className="p-8 border-t bg-slate-50 flex justify-end gap-4 shrink-0">
                 <button onClick={() => { setViewingCandidate(null); setShowTranscriptInModal(false); }} className="px-8 py-3.5 bg-white text-slate-500 border border-slate-200 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-50 transition-all">Tutup</button>
-                <button onClick={() => generateBODReport([viewingCandidate], '', '')} className="px-8 py-3.5 bg-slate-900 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl hover:bg-blue-600 transition-all flex items-center gap-2">
+                <button onClick={() => generateBODReport([viewingCandidate], '', '')} className="px-8 py-3.5 bg-slate-900 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl hover:bg-violet-600 transition-all flex items-center gap-2">
                    <Download className="w-4 h-4"/> PDF Report
                 </button>
              </div>
-          </div>
+           </div>
         </div>
       )}
 
-      {/* Add/Edit Modal with PDF Scanner */}
+      {/* Add/Edit Modal (Unchanged) ... */}
+      {/* Alert Modal (Unchanged) ... */}
+      {/* Confirm Modal (Unchanged) ... */}
+      
+      {/* Re-include modal/alerts because I replaced the entire App.tsx */}
       {showAddModal && (
-        <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
+        <div className="fixed inset-0 z-[50] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
            <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-10 shadow-2xl relative animate-in zoom-in-95 duration-500 max-h-[90vh] overflow-y-auto">
-              <button onClick={() => setShowAddModal(false)} className="absolute top-8 right-8 text-slate-300 hover:text-red-500 transition-all"><X className="w-6 h-6"/></button>
+              <button onClick={() => setShowAddModal(false)} className="absolute top-8 right-8 text-slate-300 hover:text-rose-500 transition-all"><X className="w-6 h-6"/></button>
               <h3 className="text-2xl font-black text-slate-800 mb-6 tracking-tight">
                 {isEditing ? 'Edit Data Pelamar' : 'Tambah Pelamar'}
               </h3>
               
               {!isEditing && (
-                <div className="mb-8 p-4 bg-blue-50 rounded-2xl border-2 border-dashed border-blue-200 flex flex-col items-center justify-center gap-3 relative overflow-hidden group">
+                <div className="mb-8 p-4 bg-violet-50 rounded-2xl border-2 border-dashed border-violet-200 flex flex-col items-center justify-center gap-3 relative overflow-hidden group">
                    {isParsing ? (
                      <>
-                       <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                       <p className="text-xs font-black text-blue-600 uppercase animate-pulse">AI Sedang Scan CV...</p>
+                       <Loader2 className="w-8 h-8 text-violet-600 animate-spin" />
+                       <p className="text-xs font-black text-violet-600 uppercase animate-pulse">AI Sedang Scan CV...</p>
                      </>
                    ) : (
                      <>
-                       <Upload className="w-8 h-8 text-blue-600" />
+                       <Upload className="w-8 h-8 text-violet-600" />
                        <div className="text-center">
-                          <p className="text-xs font-black text-blue-600 uppercase">Upload PDF CV / Foto CV</p>
-                          <p className="text-[9px] text-blue-400 font-bold">Data akan terisi otomatis oleh AI</p>
+                          <p className="text-xs font-black text-violet-600 uppercase">Upload PDF CV / Foto CV</p>
+                          <p className="text-[9px] text-violet-400 font-bold">Data akan terisi otomatis oleh AI</p>
                        </div>
                        <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="application/pdf,image/*" className="absolute inset-0 opacity-0 cursor-pointer" />
                      </>
@@ -1229,28 +1357,28 @@ const App: React.FC = () => {
                  <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nama Lengkap</label>
-                       <input type="text" value={newCandName} onChange={e => setNewCandName(e.target.value)} placeholder="Nama..." className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all" />
+                       <input type="text" value={newCandName} onChange={e => setNewCandName(e.target.value)} placeholder="Nama..." className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-violet-500 outline-none transition-all" />
                     </div>
                     <div className="space-y-2">
                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Email</label>
-                       <input type="email" value={newCandEmail} onChange={e => setNewCandEmail(e.target.value)} placeholder="Email..." className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all" />
+                       <input type="email" value={newCandEmail} onChange={e => setNewCandEmail(e.target.value)} placeholder="Email..." className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-violet-500 outline-none transition-all" />
                     </div>
                  </div>
                  <div className="space-y-2">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Telepon</label>
-                    <input type="text" value={newCandPhone} onChange={e => setNewCandPhone(e.target.value)} placeholder="No. WA..." className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all" />
+                    <input type="text" value={newCandPhone} onChange={e => setNewCandPhone(e.target.value)} placeholder="No. WA..." className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-violet-500 outline-none transition-all" />
                  </div>
                  <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Divisi</label>
-                       <select value={newCandDiv} onChange={e => {setNewCandDiv(e.target.value as Division); setNewCandPos('');}} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all">
+                       <select value={newCandDiv} onChange={e => {setNewCandDiv(e.target.value as Division); setNewCandPos('');}} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-violet-500 outline-none transition-all">
                           <option value="">Divisi...</option>
                           {Object.values(Division).map(d => <option key={d} value={d}>{d}</option>)}
                        </select>
                     </div>
                     <div className="space-y-2">
                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Posisi</label>
-                       <select value={newCandPos} onChange={e => setNewCandPos(e.target.value as Position)} disabled={!newCandDiv} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-blue-500 outline-none transition-all disabled:opacity-50">
+                       <select value={newCandPos} onChange={e => setNewCandPos(e.target.value as Position)} disabled={!newCandDiv} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-violet-500 outline-none transition-all disabled:opacity-50">
                           <option value="">Posisi...</option>
                           {newCandDiv && DIVISION_POSITIONS[newCandDiv as Division].map(p => <option key={p} value={p}>{p}</option>)}
                        </select>
@@ -1262,11 +1390,11 @@ const App: React.FC = () => {
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-2">Kelengkapan Dokumen</p>
                     <div className="flex gap-4">
                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="checkbox" checked={hasKtp} onChange={e => setHasKtp(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                          <input type="checkbox" checked={hasKtp} onChange={e => setHasKtp(e.target.checked)} className="w-4 h-4 accent-violet-600 rounded" />
                           <span className="text-xs font-bold text-slate-700">KTP</span>
                        </label>
                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="checkbox" checked={hasKk} onChange={e => setHasKk(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                          <input type="checkbox" checked={hasKk} onChange={e => setHasKk(e.target.checked)} className="w-4 h-4 accent-violet-600 rounded" />
                           <span className="text-xs font-bold text-slate-700">KK</span>
                        </label>
                     </div>
@@ -1275,18 +1403,18 @@ const App: React.FC = () => {
                     {isSimRequired && (
                       <div className="flex gap-4 pt-2 border-t border-slate-200/50">
                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input type="checkbox" checked={hasSimA} onChange={e => setHasSimA(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                            <input type="checkbox" checked={hasSimA} onChange={e => setHasSimA(e.target.checked)} className="w-4 h-4 accent-violet-600 rounded" />
                             <span className="text-xs font-bold text-slate-700">SIM A</span>
                          </label>
                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input type="checkbox" checked={hasSimC} onChange={e => setHasSimC(e.target.checked)} className="w-4 h-4 accent-blue-600 rounded" />
+                            <input type="checkbox" checked={hasSimC} onChange={e => setHasSimC(e.target.checked)} className="w-4 h-4 accent-violet-600 rounded" />
                             <span className="text-xs font-bold text-slate-700">SIM C</span>
                          </label>
                       </div>
                     )}
                  </div>
 
-                 <button onClick={handleSaveCandidate} disabled={isParsing} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest shadow-xl hover:bg-blue-700 transition-all active:scale-95 flex items-center justify-center gap-2 mt-4">
+                 <button onClick={handleSaveCandidate} disabled={isParsing} className="w-full bg-violet-600 text-white py-4 rounded-2xl font-black uppercase tracking-widest shadow-xl hover:bg-violet-700 transition-all active:scale-95 flex items-center justify-center gap-2 mt-4">
                     {isParsing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} 
                     {isEditing ? 'Simpan Perubahan' : 'Simpan Pelamar'}
                  </button>
@@ -1294,6 +1422,66 @@ const App: React.FC = () => {
            </div>
         </div>
       )}
+
+      {/* Custom Alert Modal */}
+      {alertState.show && (
+        <div className="fixed inset-0 z-[200] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+           <div className="bg-white p-8 rounded-[2rem] shadow-2xl max-w-sm w-full text-center space-y-4 animate-in zoom-in-95 duration-300">
+              <div className={`w-16 h-16 rounded-2xl mx-auto flex items-center justify-center ${
+                alertState.type === 'success' ? 'bg-emerald-100 text-emerald-600' :
+                alertState.type === 'error' ? 'bg-red-100 text-red-600' : 'bg-violet-100 text-violet-600'
+              }`}>
+                {alertState.type === 'success' ? <CheckCircle2 className="w-8 h-8"/> :
+                 alertState.type === 'error' ? <XCircle className="w-8 h-8"/> : <Info className="w-8 h-8"/>}
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-slate-800">
+                  {alertState.type === 'success' ? 'Berhasil!' : alertState.type === 'error' ? 'Oops!' : 'Info'}
+                </h3>
+                <p className="text-xs font-medium text-slate-500 mt-1 leading-relaxed px-4">{alertState.message}</p>
+              </div>
+              <button 
+                onClick={() => setAlertState(prev => ({ ...prev, show: false }))}
+                className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-black uppercase text-xs tracking-widest hover:bg-slate-800 transition-all"
+              >
+                Tutup
+              </button>
+           </div>
+        </div>
+      )}
+
+      {/* Custom Confirm Modal */}
+      {confirmState.show && (
+        <div className="fixed inset-0 z-[200] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+           <div className="bg-white p-8 rounded-[2rem] shadow-2xl max-w-sm w-full text-center space-y-4 animate-in zoom-in-95 duration-300">
+              <div className="w-16 h-16 rounded-2xl bg-amber-100 text-amber-600 mx-auto flex items-center justify-center">
+                 <AlertTriangle className="w-8 h-8"/>
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-slate-800">Konfirmasi</h3>
+                <p className="text-xs font-medium text-slate-500 mt-1 leading-relaxed px-4">{confirmState.message}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <button 
+                  onClick={() => setConfirmState(prev => ({ ...prev, show: false }))}
+                  className="py-3.5 bg-slate-100 text-slate-500 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all"
+                >
+                  Batal
+                </button>
+                <button 
+                  onClick={() => {
+                    confirmState.onConfirm();
+                    setConfirmState(prev => ({ ...prev, show: false }));
+                  }}
+                  className="py-3.5 bg-violet-600 text-white rounded-xl font-black uppercase text-xs tracking-widest hover:bg-violet-700 transition-all"
+                >
+                  Ya, Lanjutkan
+                </button>
+              </div>
+           </div>
+        </div>
+      )}
+
     </div>
   );
 };

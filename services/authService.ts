@@ -14,24 +14,28 @@ const DEFAULT_USERS: User[] = [
 ];
 
 export const seedUsers = async () => {
-  for (const user of DEFAULT_USERS) {
-    const userRef = doc(db, "users", user.username);
-    const userSnap = await getDoc(userRef);
-    
-    if (!userSnap.exists()) {
-      // Create default user with password '123'
-      await setDoc(userRef, {
-        ...user,
-        password: '123' 
-      });
-      console.log(`User ${user.username} seeded.`);
+  try {
+    for (const user of DEFAULT_USERS) {
+      const userRef = doc(db, "users", user.username);
+      const userSnap = await getDoc(userRef);
+      
+      if (!userSnap.exists()) {
+        // Create default user with password '123'
+        await setDoc(userRef, {
+          ...user,
+          password: '123' 
+        });
+        console.log(`User ${user.username} seeded successfully.`);
+      }
     }
+  } catch (error) {
+    console.error("Error seeding users (Check Firebase Rules):", error);
   }
 };
 
 export const loginUser = async (username: string, password: string): Promise<User | null> => {
   try {
-    const userRef = doc(db, "users", username.toLowerCase());
+    const userRef = doc(db, "users", username.toLowerCase().trim());
     const userSnap = await getDoc(userRef);
 
     if (userSnap.exists()) {
@@ -40,11 +44,16 @@ export const loginUser = async (username: string, password: string): Promise<Use
         // Return user data without password
         const { password, ...userData } = data;
         return userData as User;
+      } else {
+        console.warn("Login failed: Incorrect password for", username);
       }
+    } else {
+      console.warn("Login failed: User not found:", username);
     }
     return null;
   } catch (error) {
-    console.error("Login error:", error);
+    console.error("Login System Error:", error);
+    // Return null so the UI handles it as a generic failure, but log it for dev
     return null;
   }
 };
