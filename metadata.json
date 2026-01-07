@@ -1,0 +1,8 @@
+{
+  "name": "AI Interview Pro & CV Scanner",
+  "description": "A comprehensive AI-powered recruitment platform for live interview monitoring, automated CV parsing, and instant candidate evaluation.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
