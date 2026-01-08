@@ -9,6 +9,7 @@ const getAI = () => {
 };
 
 const aggressiveJsonRepair = (str: string): string => {
+  if (!str) return "{}";
   let fixed = str.replace(/```json\n?|```/g, '').trim();
   const firstOpen = fixed.indexOf('{');
   const lastClose = fixed.lastIndexOf('}');
@@ -20,11 +21,48 @@ export async function parseCV(fileData: string, mimeType: string): Promise<Parti
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview", 
-      contents: [{ parts: [{ inlineData: { data: fileData, mimeType }, text: "Extract CV to JSON: name, email, phone, lastPosition, skills (array), experience, education." }] }],
-      config: { responseMimeType: "application/json" }
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              data: fileData,
+              mimeType: mimeType
+            }
+          },
+          {
+            text: "Ekstrak informasi dari CV ini ke dalam format JSON. Jika informasi tidak ditemukan, biarkan string kosong. Pastikan nomor telepon dan email diekstrak dengan akurat."
+          }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            name: { type: Type.STRING, description: "Nama lengkap kandidat" },
+            email: { type: Type.STRING, description: "Alamat email" },
+            phone: { type: Type.STRING, description: "Nomor telepon/WA" },
+            lastPosition: { type: Type.STRING, description: "Jabatan terakhir" },
+            skills: { 
+              type: Type.ARRAY, 
+              items: { type: Type.STRING },
+              description: "Daftar keahlian" 
+            },
+            experience: { type: Type.STRING, description: "Ringkasan pengalaman kerja" },
+            education: { type: Type.STRING, description: "Pendidikan terakhir" }
+          }
+        }
+      }
     });
-    return JSON.parse(aggressiveJsonRepair(response.text || "{}"));
-  } catch (e) { return {}; }
+
+    const textOutput = response.text;
+    if (!textOutput) return {};
+    
+    return JSON.parse(aggressiveJsonRepair(textOutput));
+  } catch (e) {
+    console.error("Gagal melakukan parsing CV:", e);
+    return {};
+  }
 }
 
 export async function evaluateInterview(
@@ -75,7 +113,11 @@ export async function evaluateInterview(
             type: Type.ARRAY, 
             items: { 
               type: Type.OBJECT,
-              properties: { id: { type: Type.STRING }, score: { type: Type.NUMBER }, reasoning: { type: Type.STRING } }
+              properties: { 
+                id: { type: Type.STRING }, 
+                score: { type: Type.NUMBER }, 
+                reasoning: { type: Type.STRING } 
+              }
             } 
           },
           summary: { type: Type.STRING },
