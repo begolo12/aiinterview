@@ -30,7 +30,7 @@ export async function parseCV(fileData: string, mimeType: string): Promise<Parti
             }
           },
           {
-            text: "Ekstrak informasi dari CV ini ke dalam format JSON. Jika informasi tidak ditemukan, biarkan string kosong. Pastikan nomor telepon dan email diekstrak dengan akurat."
+            text: "Ekstrak informasi dari CV ini ke dalam format JSON. WAJIB MENGGUNAKAN BAHASA INDONESIA untuk ringkasan dan deskripsi. Jika informasi tidak ditemukan, biarkan string kosong. Pastikan nomor telepon dan email diekstrak dengan akurat."
           }
         ]
       },
@@ -42,14 +42,14 @@ export async function parseCV(fileData: string, mimeType: string): Promise<Parti
             name: { type: Type.STRING, description: "Nama lengkap kandidat" },
             email: { type: Type.STRING, description: "Alamat email" },
             phone: { type: Type.STRING, description: "Nomor telepon/WA" },
-            lastPosition: { type: Type.STRING, description: "Jabatan terakhir" },
+            lastPosition: { type: Type.STRING, description: "Jabatan terakhir (dalam Bahasa Indonesia)" },
             skills: { 
               type: Type.ARRAY, 
               items: { type: Type.STRING },
               description: "Daftar keahlian" 
             },
-            experience: { type: Type.STRING, description: "Ringkasan pengalaman kerja" },
-            education: { type: Type.STRING, description: "Pendidikan terakhir" }
+            experience: { type: Type.STRING, description: "Ringkasan pengalaman kerja dalam Bahasa Indonesia" },
+            education: { type: Type.STRING, description: "Pendidikan terakhir dalam Bahasa Indonesia" }
           }
         }
       }
@@ -74,31 +74,29 @@ export async function evaluateInterview(
 ): Promise<EvaluationResult> {
   const ai = getAI();
   const safeTranscript = transcript.substring(0, 15000);
-  const questionsList = questions.map(q => `ID:${q.id} | Q:"${q.question}" | Key:"${q.idealAnswer}"`).join('\n');
+  const questionsList = questions.map(q => `ID:${q.id} | Pertanyaan:"${q.question}" | Kunci Jawaban:"${q.idealAnswer}"`).join('\n');
 
   const prompt = `
-    Role: Senior HR Analyst.
-    Task: Evaluate CANDIDATE only from a raw, single-stream interview transcript.
+    Role: Senior HR Analyst Profesional di Indonesia.
+    Tugas: Evaluasi KANDIDAT berdasarkan transkrip wawancara.
     
-    Context:
-    Candidate: ${candidate.name} | Position: ${position}
+    PERATURAN UTAMA:
+    1. SEMUA HASIL TEKS (summary, strengths, weaknesses, reasoning) WAJIB MENGGUNAKAN BAHASA INDONESIA yang formal dan profesional.
+    2. Bedakan pembicara: HR bertanya (sesuai daftar pertanyaan), Kandidat menjawab.
+    3. Abaikan ucapan HR dalam penilaian.
+    4. Evaluasi jawaban Kandidat terhadap "Kunci Jawaban" yang disediakan.
+    5. Maklumi gangguan suara (stuttering, fillers) dari hasil speech-to-text.
     
-    Processing Logic:
-    1. Distinguish speakers: HR asks questions (matching the reference list), Candidate provides answers.
-    2. IGNORE HR's speech for scoring.
-    3. Evaluate Candidate answers against "Key" provided.
-    4. Handle speech-to-text noise (stuttering, fillers).
-    
-    Reference Questions:
+    Daftar Pertanyaan & Kunci:
     ${questionsList}
 
-    Raw Transcript:
+    Transkrip Wawancara:
     ${safeTranscript}
     
-    Scoring (0-100):
-    - 0-40: Irrelevant/No Answer.
-    - 41-70: Basic/Vague.
-    - 71-100: Detailed/Professional.
+    Skala Penilaian (0-100):
+    - 0-40: Tidak relevan / Tidak menjawab.
+    - 41-70: Jawaban dasar / Normatif / Kurang detail.
+    - 71-100: Jawaban sangat baik / Detail / Profesional.
   `;
 
   const response = await ai.models.generateContent({
@@ -116,13 +114,13 @@ export async function evaluateInterview(
               properties: { 
                 id: { type: Type.STRING }, 
                 score: { type: Type.NUMBER }, 
-                reasoning: { type: Type.STRING } 
+                reasoning: { type: Type.STRING, description: "Analisis alasan skor dalam Bahasa Indonesia" } 
               }
             } 
           },
-          summary: { type: Type.STRING },
-          strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-          weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } }
+          summary: { type: Type.STRING, description: "Kesimpulan keseluruhan dalam Bahasa Indonesia" },
+          strengths: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Daftar kekuatan kandidat dalam Bahasa Indonesia" },
+          weaknesses: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Daftar kekurangan kandidat dalam Bahasa Indonesia" }
         }
       }
     }
@@ -148,9 +146,9 @@ export async function evaluateInterview(
     verdict: total >= 70 ? 'LULUS' : 'TIDAK LULUS',
     strengths: data.strengths || [], weaknesses: data.weaknesses || [], summary: data.summary || "",
     criteriaScores: [
-      { name: 'Appearance', score: manualScores.appearance, type: 'Manual', reason: '-' },
-      { name: 'AI Soft Skill', score: finalG, type: 'AI', reason: 'Weighted Avg' },
-      { name: 'AI Hard Skill', score: finalT, type: 'AI', reason: 'Weighted Avg' }
+      { name: 'Penampilan', score: manualScores.appearance, type: 'Manual', reason: '-' },
+      { name: 'AI Soft Skill', score: finalG, type: 'AI', reason: 'Rata-rata tertimbang' },
+      { name: 'AI Hard Skill', score: finalT, type: 'AI', reason: 'Rata-rata tertimbang' }
     ],
     interviewDate: new Date().toLocaleDateString('id-ID'),
     questionBreakdown: breakdown
