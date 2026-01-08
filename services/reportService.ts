@@ -11,11 +11,9 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
   const pageHeight = doc.internal.pageSize.height;
   
   // -- HEADER --
-  // Header Violet Bar
-  doc.setFillColor(109, 40, 217); // Violet 700 (was Blue 800)
+  doc.setFillColor(109, 40, 217); 
   doc.rect(0, 0, pageWidth, 40, 'F');
   
-  // Logo / Title
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(22);
   doc.setFont("helvetica", "bold");
@@ -29,15 +27,16 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
 
   let yPos = 55;
 
-  // -- 1. RINGKASAN EKSEKUTIF (Hanya di halaman pertama) --
+  // -- 1. RINGKASAN EKSEKUTIF --
+  const evaluatedOnly = candidates.filter(c => c.evaluation);
   const total = candidates.length;
   const lulus = candidates.filter(c => c.status === 'LULUS').length;
   const tidakLulus = candidates.filter(c => c.status === 'TIDAK LULUS').length;
-  const bestCandidate = candidates
+  const bestCandidate = evaluatedOnly
     .filter(c => c.status === 'LULUS')
     .sort((a, b) => (b.evaluation?.score || 0) - (a.evaluation?.score || 0))[0];
 
-  doc.setTextColor(109, 40, 217); // Violet 700
+  doc.setTextColor(109, 40, 217); 
   doc.setFontSize(14);
   doc.setFont("helvetica", "bold");
   doc.text("1. RINGKASAN EKSEKUTIF", 14, yPos);
@@ -47,28 +46,27 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
   doc.setFont("helvetica", "normal");
   doc.setTextColor(60, 60, 60);
   
-  // Stats Box
   doc.setDrawColor(200, 200, 200);
-  doc.setFillColor(248, 250, 252); // Slate 50
+  doc.setFillColor(248, 250, 252); 
   doc.roundedRect(14, yPos, pageWidth - 28, 25, 3, 3, 'FD');
   
-  doc.text(`Total Kandidat: ${total}`, 20, yPos + 10);
-  doc.text(`Lolos: ${lulus} (${total ? Math.round((lulus/total)*100) : 0}%)`, 80, yPos + 10);
-  doc.text(`Tidak Lolos: ${tidakLulus}`, 140, yPos + 10);
+  doc.text(`Total Laporan: ${candidates.length}`, 20, yPos + 10);
+  doc.text(`Lulus: ${lulus}`, 80, yPos + 10);
+  doc.text(`Tidak Lulus: ${tidakLulus}`, 140, yPos + 10);
   
   if (bestCandidate) {
-    doc.setTextColor(22, 163, 74); // Green
+    doc.setTextColor(22, 163, 74); 
     doc.setFont("helvetica", "bold");
     doc.text(`Top Rekomendasi: ${bestCandidate.name} (${bestCandidate.evaluation?.score}/100)`, 20, yPos + 18);
   } else {
     doc.setTextColor(150, 150, 150);
-    doc.text("Belum ada kandidat yang LULUS.", 20, yPos + 18);
+    doc.text("Kandidat yang terpilih belum ada yang lulus.", 20, yPos + 18);
   }
 
   yPos += 35;
 
   // -- 2. REKAPITULASI TABEL --
-  doc.setTextColor(109, 40, 217); // Violet 700
+  doc.setTextColor(109, 40, 217); 
   doc.setFontSize(14);
   doc.setFont("helvetica", "bold");
   doc.text("2. REKAPITULASI KANDIDAT", 14, yPos);
@@ -78,17 +76,16 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
     i + 1,
     c.name,
     c.position,
-    c.evaluation?.score ? `${c.evaluation.score}` : '-',
+    c.evaluation?.interviewDate || '-', // Tanggal Interview
     c.status,
-    c.evaluation?.generalScore || '-',
-    c.evaluation?.technicalScore || '-'
+    c.evaluation?.score ? `${c.evaluation.score}` : '-',
   ]);
 
   doc.autoTable({
     startY: yPos,
-    head: [['No', 'Nama', 'Posisi', 'Total', 'Status', 'General', 'Teknis']],
+    head: [['No', 'Nama', 'Posisi', 'Tgl Interview', 'Status', 'Total Score']],
     body: tableData,
-    headStyles: { fillColor: [109, 40, 217], halign: 'center' }, // Violet 700
+    headStyles: { fillColor: [109, 40, 217], halign: 'center' }, 
     bodyStyles: { textColor: 50 },
     theme: 'grid',
     styles: { fontSize: 9, halign: 'center', cellPadding: 3 },
@@ -103,21 +100,21 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
       doc.addPage();
       yPos = 20;
 
-      // Header Nama Kandidat
       const isPass = c.status === 'LULUS';
-      doc.setFillColor(isPass ? 220 : 254, isPass ? 252 : 226, isPass ? 231 : 226); // Soft Green or Red
-      doc.rect(0, 0, pageWidth, 30, 'F');
+      doc.setFillColor(isPass ? 220 : 254, isPass ? 252 : 226, isPass ? 231 : 226); 
+      doc.rect(0, 0, pageWidth, 35, 'F');
 
       doc.setFontSize(18);
       doc.setFont("helvetica", "bold");
       doc.setTextColor(0, 0, 0);
       doc.text(c.name, 14, 18);
       
-      doc.setFontSize(10);
+      doc.setFontSize(9);
       doc.setFont("helvetica", "normal");
       doc.text(`${c.position}  |  ${c.division}`, 14, 25);
+      doc.setFont("helvetica", "bold");
+      doc.text(`TANGGAL INTERVIEW: ${c.evaluation?.interviewDate || '-'}`, 14, 30);
 
-      // Score Badge in Top Right
       doc.setFontSize(24);
       doc.setFont("helvetica", "bold");
       doc.setTextColor(isPass ? 22 : 220, isPass ? 163 : 38, isPass ? 74 : 38);
@@ -125,18 +122,16 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
       doc.setFontSize(8);
       doc.text("SKOR AKHIR", pageWidth - 30, 25, { align: 'right' });
 
-      yPos = 40;
+      yPos = 45;
 
-      // -- A. ANALISIS KUALITATIF (Strengths & Weaknesses) --
       doc.setFontSize(12);
       doc.setFont("helvetica", "bold");
-      doc.setTextColor(109, 40, 217); // Violet 700
+      doc.setTextColor(109, 40, 217); 
       doc.text("A. ANALISIS KUALITATIF AI", 14, yPos);
       yPos += 5;
 
-      // Box Strengths
-      doc.setFillColor(240, 253, 244); // Green 50
-      doc.setDrawColor(22, 163, 74); // Green 600
+      doc.setFillColor(240, 253, 244); 
+      doc.setDrawColor(22, 163, 74); 
       doc.rect(14, yPos, (pageWidth/2) - 20, 40, 'FD');
       
       doc.setTextColor(22, 163, 74);
@@ -150,9 +145,8 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
       const splitStrengths = doc.splitTextToSize(strengthsText, (pageWidth/2) - 30);
       doc.text(splitStrengths, 18, yPos + 14);
 
-      // Box Weaknesses
-      doc.setFillColor(254, 242, 242); // Red 50
-      doc.setDrawColor(220, 38, 38); // Red 600
+      doc.setFillColor(254, 242, 242); 
+      doc.setDrawColor(220, 38, 38); 
       doc.rect((pageWidth/2) + 6, yPos, (pageWidth/2) - 20, 40, 'FD');
 
       doc.setTextColor(220, 38, 38);
@@ -169,66 +163,60 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
 
       yPos += 50;
 
-      // -- B. DETAIL PERTANYAAN & SKOR --
       doc.setFontSize(12);
       doc.setFont("helvetica", "bold");
-      doc.setTextColor(109, 40, 217); // Violet 700
-      doc.text("B. DETAIL PERTANYAAN & SKOR", 14, yPos);
+      doc.setTextColor(109, 40, 217); 
+      doc.text("B. DETAIL PENILAIAN JAWABAN", 14, yPos);
       yPos += 5;
 
-      // Prepare Data from questionBreakdown
-      // Fallback if breakdown doesn't exist (old data)
       let detailData = [];
       if (c.evaluation?.questionBreakdown && c.evaluation.questionBreakdown.length > 0) {
         detailData = c.evaluation.questionBreakdown.map((q) => [
           q.category,
-          q.question, // Question text
-          q.reasoning || '-', // New: Reasoning/Explanation
-          `${q.weight}%`, // Weight
-          q.score // Score
+          q.question, 
+          q.reasoning || '-', 
+          `${q.weight}%`, 
+          q.score 
         ]);
       } else {
-        // Fallback for old data without breakdown
         detailData = [
-            ['General', 'Nilai Rata-rata General (Data Lama)', 'Data Lama', '50%', c.evaluation?.generalScore || 0],
-            ['Technical', 'Nilai Rata-rata Technical (Data Lama)', 'Data Lama', '50%', c.evaluation?.technicalScore || 0]
+            ['General', 'Data evaluasi lama.', '-', '50%', c.evaluation?.generalScore || 0],
+            ['Technical', 'Data evaluasi lama.', '-', '50%', c.evaluation?.technicalScore || 0]
         ];
       }
 
       doc.autoTable({
         startY: yPos,
-        head: [['Kategori', 'Pertanyaan', 'Analisis / Respon', 'Bobot', 'Skor']],
+        head: [['Kategori', 'Pertanyaan', 'Analisis AI', 'Bobot', 'Skor']],
         body: detailData,
         theme: 'grid',
-        headStyles: { fillColor: [243, 232, 255], textColor: [109, 40, 217], fontStyle: 'bold' }, // Violet 100 bg, Violet 700 text
+        headStyles: { fillColor: [243, 232, 255], textColor: [109, 40, 217], fontStyle: 'bold' }, 
         styles: { fontSize: 8, cellPadding: 3, valign: 'middle', overflow: 'linebreak' },
         columnStyles: {
           0: { cellWidth: 20, fontStyle: 'bold' },
-          1: { cellWidth: 60 }, // Question
-          2: { cellWidth: 'auto' }, // Reasoning (Dynamic)
+          1: { cellWidth: 50 }, 
+          2: { cellWidth: 'auto' }, 
           3: { cellWidth: 15, halign: 'center' },
           4: { cellWidth: 15, halign: 'center', fontStyle: 'bold' }
         },
         didParseCell: function(data: any) {
-            // Color code the score column (index 4)
             if (data.section === 'body' && data.column.index === 4) {
                 const val = parseInt(data.cell.raw);
-                if (val >= 80) data.cell.styles.textColor = [22, 163, 74]; // Green
-                else if (val < 50) data.cell.styles.textColor = [220, 38, 38]; // Red
+                if (val >= 80) data.cell.styles.textColor = [22, 163, 74]; 
+                else if (val < 50) data.cell.styles.textColor = [220, 38, 38]; 
             }
         }
       });
 
-      // -- C. KESIMPULAN --
       const finalY = (doc as any).lastAutoTable.finalY + 10;
       doc.setFillColor(248, 250, 252);
       doc.setDrawColor(200, 200, 200);
       doc.roundedRect(14, finalY, pageWidth - 28, 20, 2, 2, 'FD');
       
       doc.setFontSize(9);
-      doc.setTextColor(109, 40, 217); // Violet 700
+      doc.setTextColor(109, 40, 217); 
       doc.setFont("helvetica", "bold");
-      doc.text("KESIMPULAN AI:", 18, finalY + 6);
+      doc.text("KESIMPULAN AKHIR:", 18, finalY + 6);
       
       doc.setFontSize(9);
       doc.setTextColor(70, 70, 70);
@@ -238,13 +226,13 @@ export const generateBODReport = (candidates: Candidate[], filterDivision: strin
     });
   }
 
-  // Footer Numbering
   const pageCount = doc.internal.getNumberOfPages();
   for(let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
     doc.setFontSize(8);
     doc.setTextColor(150);
-    doc.text(`Daniswara Onboarding AI - Page ${i} of ${pageCount}`, pageWidth - 60, pageHeight - 10);
+    doc.text(`Daniswara Onboarding AI - Generated by System`, 14, pageHeight - 10);
+    doc.text(`Halaman ${i} dari ${pageCount}`, pageWidth - 40, pageHeight - 10);
   }
 
   doc.save(`Laporan_Seleksi_${dateStr.replace(/ /g, '_')}.pdf`);

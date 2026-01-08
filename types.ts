@@ -5,10 +5,7 @@ export enum Division {
   OPERASI = 'Operasi'
 }
 
-export type Position = 
-  | 'Office Boy (OB)' | 'Umum' | 'Konten Kreator' | 'Dapur' | 'IT' | 'Manager Busdev'
-  | 'Staff Keuangan' | 'SPV Keuangan' | 'Manager Keuangan'
-  | 'Staff Operasional' | 'Staff Gudang' | 'Admin Operasional' | 'Staff Operasional & Logistik' | 'SPV Operasional' | 'Manager Operasional';
+export type Position = string;
 
 export interface QuestionTemplate {
   id: string;
